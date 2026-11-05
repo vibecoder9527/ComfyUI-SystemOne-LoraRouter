@@ -1,0 +1,5 @@
+# The skeleton uses the Python standard library only (json, dataclasses, os, uuid, copy).
+# ComfyUI provides torch, comfy.sd, and folder_paths when this package is installed
+# under custom_nodes/. apply_loras imports those optionally and no-ops when they
+# are missing.
+# A future live SystemOne client may add httpx. Do not add it while the client is a stub.

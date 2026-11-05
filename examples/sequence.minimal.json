@@ -1,0 +1,39 @@
+{
+  "version": 1,
+  "steps": [
+    {
+      "step_id": "s1",
+      "theme_id": "art_style",
+      "enabled_by_default": true,
+      "dependencies": []
+    },
+    {
+      "step_id": "s2",
+      "theme_id": "character_pack",
+      "enabled_by_default": false,
+      "dependencies": [
+        {
+          "when": {
+            "step_id": "s1",
+            "op": "includes_any",
+            "option_ids": ["anime"]
+          },
+          "actions": [
+            { "type": "enable_step" },
+            {
+              "type": "rewrite_instructions",
+              "instructions": "在動漫畫風下，選擇要啟用的角色包（可複選）。"
+            },
+            {
+              "type": "rewrite_options",
+              "keep_option_ids": ["waifu_a"],
+              "remove_option_ids": ["waifu_b"],
+              "add_options": [],
+              "patch_bindings": {}
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

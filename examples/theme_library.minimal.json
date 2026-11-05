@@ -1,0 +1,53 @@
+{
+  "version": 1,
+  "themes": [
+    {
+      "theme_id": "art_style",
+      "title": "畫風",
+      "instructions": "判斷提示詞的主要畫風。",
+      "select_mode": "single",
+      "fallback_option_id": "realistic",
+      "options": [
+        {
+          "option_id": "anime",
+          "label": "動漫",
+          "description": "二次元、賽璐璐、動漫角色",
+          "lora_bindings": [
+            { "lora_id": "style_anime_v3", "strength_model": 0.85 }
+          ]
+        },
+        {
+          "option_id": "realistic",
+          "label": "寫實",
+          "description": "真實光影、照片感、寫實皮膚",
+          "lora_bindings": [
+            { "lora_id": "style_realistic" }
+          ]
+        }
+      ]
+    },
+    {
+      "theme_id": "character_pack",
+      "title": "角色包",
+      "instructions": "是否套用角色 LoRA（可複選）。",
+      "select_mode": "multi",
+      "fallback_option_id": null,
+      "options": [
+        {
+          "option_id": "waifu_a",
+          "label": "角色 A",
+          "description": "提到角色 A 的名字或特徵",
+          "lora_bindings": [
+            { "lora_id": "char_a", "strength_model": 0.9, "strength_clip": 0.9 }
+          ]
+        },
+        {
+          "option_id": "waifu_b",
+          "label": "角色 B（示範無檔）",
+          "description": "提到角色 B",
+          "lora_bindings": []
+        }
+      ]
+    }
+  ]
+}
