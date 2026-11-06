@@ -26,13 +26,13 @@ class S1ThemeSequence:
     OUTPUT_TOOLTIPS = (
         "MODEL after LoRA weights, or the input MODEL when nothing was patched.",
         "CLIP after LoRA weights. None when the clip input was left unconnected; do not wire it downstream in that case.",
-        "Compact JSON: answers, applied LoRAs, errors, and stub notes.",
+        "Compact JSON: answers, applied LoRAs, errors, and debug notes.",
     )
     DESCRIPTION = (
-        "Walk sequence_json against the theme and LoRA libraries, ask SystemOne "
-        "(choice for single, noul for multi), then apply LoRAs. "
-        "Skeleton: the HTTP client is an offline stub and weights are patched only "
-        "when ComfyUI's load_lora_for_models imports. "
+        "Walk sequence_json against the theme and LoRA libraries, POST to "
+        "SystemOne (choice for single, noul for multi), then apply LoRAs. "
+        "The API key is the api_key widget, otherwise SYSTEM_ONE_API_KEY. "
+        "LoRA weights are patched with ComfyUI APIs when those are importable. "
         "on_error=passthrough returns the input MODEL and CLIP plus a debug string."
     )
 
@@ -71,7 +71,7 @@ class S1ThemeSequence:
                         "dynamicPrompts": False,
                         "tooltip": (
                             "SystemOne bearer token. Blank falls through to the "
-                            "SYSTEM_ONE_API_KEY environment variable. The stub does not send it."
+                            "SYSTEM_ONE_API_KEY environment variable."
                         ),
                     },
                 ),
@@ -104,7 +104,7 @@ class S1ThemeSequence:
                         "default": DEFAULT_ENDPOINT,
                         "multiline": False,
                         "dynamicPrompts": False,
-                        "tooltip": "SystemOne POST URL. The skeleton client does not call it.",
+                        "tooltip": "SystemOne POST URL. Default https://system-one.dev/v1/systemone.",
                     },
                 ),
                 "noul_threshold": (
@@ -177,7 +177,7 @@ class S1ThemeSequence:
                     "applied": [],
                     "errors": [f"{type(exc).__name__}: {exc}"],
                     "notes": [],
-                    "stub": True,
+                    "stub": False,
                 }
             else:
                 report = dict(report)

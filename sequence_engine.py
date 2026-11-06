@@ -1,6 +1,6 @@
 """Theme Sequence executor (SPEC §4).
 
-Control flow, including where the skeleton is still a stub:
+Control flow:
 
 - ``select_mode: single`` sends one SystemOne question of type ``choice``.
 - ``select_mode: multi`` sends one ``noul`` question per option. A score at or
@@ -12,13 +12,16 @@ Control flow, including where the skeleton is still a stub:
 - A step that is disabled after dependencies is ``skipped`` and does not call
   SystemOne. Later steps can match ``when.op: skipped``.
 - One option left on a single-select step skips the API and takes that option
-  (SPEC §4.2.1). This skeleton does not invent an extra ``__none__`` option.
+  (SPEC §4.2.1). This runner does not invent an extra ``__none__`` option.
 - API and decision failures raise ``SequenceError`` with a partial report.
   ``S1ThemeSequence`` turns that into an unchanged MODEL/CLIP when
   ``on_error`` is ``passthrough``. Missing LoRA files are handled in
   ``apply_loras`` (skip on passthrough, raise on raise).
-
-The HTTP client and the weight patch are stubs unless ComfyUI is importable.
+- ``SystemOneClient.decide`` POSTs JSON. A missing API key raises
+  ``SystemOneError`` when a live call is made (mapped here via ``on_error``).
+  Injected test clients may override ``decide``.
+- LoRA weights are patched with ComfyUI APIs when those imports work. Outside
+  ComfyUI, ``apply_loras`` leaves MODEL and CLIP unchanged.
 """
 
 from __future__ import annotations
@@ -41,7 +44,6 @@ from .schema.types import (
 )
 from .systemone.client import (
     DEFAULT_ENDPOINT,
-    STUB_DECISION_NOTE,
     SystemOneClient,
     SystemOneError,
     resolve_api_key,
@@ -139,11 +141,13 @@ def run_sequence(
     step_enabled = {step.step_id: step.enabled_by_default for step in sequence.steps}
     notes: list[str] = []
     if getattr(client, "IS_STUB", False):
-        notes.append(STUB_DECISION_NOTE)
+        notes.append(
+            "SystemOne client is a stub; decide() did not send HTTP."
+        )
     if key_source == "missing":
         notes.append(
             "api_key is empty (widget blank and SYSTEM_ONE_API_KEY unset). "
-            "The stub does not call the network, so a missing key is not a failure."
+            "A live SystemOne call requires a key."
         )
 
     def fail(message: str) -> None:
