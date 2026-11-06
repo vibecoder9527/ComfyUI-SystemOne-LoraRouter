@@ -70,7 +70,7 @@ JSON widgets set `dynamicPrompts` off so `{` stays literal JSON.
 - Theme Root always decides when its inputs are valid. A downstream Theme decides because its parent option slot emitted. An `ExecutionBlocker` on `upstream` does not call SystemOne.
 - `single` sends a SystemOne `choice` question. One remaining option is selected without a call. An unknown choice fails. A confidence below `min_confidence` is kept and noted. There is no `fallback_option_id`.
 - `multi` sends one `noul` question per option. A score at or above `noul_threshold` (default `0.5`) selects it. The node refuses more than 32 options before any HTTP call.
-- LoRA Aggregate keeps a LoRA when any of its tags was contributed and `enabled_default` is true. The same `lora_id` is applied once, in `lora_id` order, at the library strengths.
+- LoRA Aggregate always applies a LoRA when `enabled_default` is true. When `enabled_default` is false, it applies only if any of its tags was contributed. The same `lora_id` is applied once, in `lora_id` order, at the library strengths.
 - A multi theme that selects nothing blocks every option slot. Upstream tags stay on that result and are not emitted. Wire Aggregate to an upstream slot if those tags must flow.
 - A theme with zero options records an error and blocks every slot. Nothing downstream of that node runs.
 
@@ -116,7 +116,7 @@ Unittest discovers `tests/test_*.py`. It does not call SystemOne and does not ne
 - Modal sync polls about every 500ms while the modal is visible. It does not hook widget changes. Theme ids and option labels are still written before queue without opening the modal.
 - Numbering runs in the browser on each loaded graph, including each nested `node.subgraph` as its own id space. A workflow that is not loaded is unchanged.
 - A restored duplicate `theme_id` is reported and not rewritten. Queueing those nodes in one result still raises `SchemaError`.
-- Tag match is an exact string overlap. A LoRA with `enabled_default: false` is skipped even when a tag matches.
+- Tag match is an exact string overlap. `enabled_default: true` is always-on (no tag required). `enabled_default: false` is tag-gated (apply only on overlap).
 - Old `lora_bindings` and per-binding strengths are not applied at runtime. See MIGRATION.
 - `apply_loras` is a no-op when ComfyUI is not importable.
 - There is no in-editor preview of a SystemOne answer.

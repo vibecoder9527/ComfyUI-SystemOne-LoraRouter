@@ -162,7 +162,7 @@ Chain Collect nodes to merge more than two payloads.
 }
 ```
 
-`name` is the file name under ComfyUI `loras/`. The library node does not open the file. `enabled_default` defaults to true. `tags` defaults to an empty list. Stored JSON has `strength_model` and `strength_clip`. It has no `strength` key. The editor writes one number into both strength fields. Existing documents whose strengths differ still parse and apply as stored.
+`name` is the file name under ComfyUI `loras/`. The library node does not open the file. `enabled_default` defaults to true (always-on). Uncheck it to make the entry tag-gated. Example libraries set `enabled_default: false` so demos stay tag-driven. `tags` defaults to an empty list. Stored JSON has `strength_model` and `strength_clip`. It has no `strength` key. The editor writes one number into both strength fields. Existing documents whose strengths differ still parse and apply as stored.
 
 Ids: the smallest unused `lora_N` starting at `lora_1`, filling gaps. A non-empty id is kept. `parse_lora_library` does not assign ids.
 
@@ -174,7 +174,7 @@ Inputs: `model` (`MODEL`), `lora_lib` (`S1_LORA_LIB`), `decision` (`S1_DECISION`
 
 `decision` is a selected option slot or the output of Theme Collect. A raw theme result from before this break is not accepted.
 
-A library entry matches when `enabled_default` is true and any of its tags is in the payload's tag list. Comparison is exact and case-sensitive. An entry that overlaps but has `enabled_default: false` is listed in `skipped` with reason `enabled_default is false`.
+`enabled_default: true` (always-on) always matches, even with no tag overlap. `enabled_default: false` (tag-gated) matches only when any of its tags is in the payload's tag list. Comparison is exact and case-sensitive. Tag-gated entries with no overlap are omitted (not listed in `skipped`).
 
 Each matching `lora_id` is applied once, in `lora_id` order, through `apply_loras`, using the library strengths only. There is no per-option strength and no `strength_conflict` policy.
 

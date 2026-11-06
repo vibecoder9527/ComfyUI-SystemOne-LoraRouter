@@ -1,7 +1,8 @@
 """Match accumulated theme tags to the LoRA library and apply each LoRA once.
 
-A library entry matches when ``enabled_default`` is true and any of its tags
-is in the result's tag list. Comparison is exact. The library
+``enabled_default`` true (always-on): the entry is applied regardless of tags.
+``enabled_default`` false (tag-gated): the entry is applied only when any of
+its tags is in the result's tag list. Comparison is exact. The library
 ``strength_model`` and ``strength_clip`` are the only strengths. Entries are
 applied in ``lora_id`` order through ``apply_loras``.
 """
@@ -49,8 +50,11 @@ def match_loras(lora_lib: LoraLibrary, decision: DecisionPayload) -> tuple[list[
     """Return ``(matched, skipped)`` without loading weight files.
 
     ``matched`` items use the ``apply_loras`` shape plus ``matched_tags``.
-    ``skipped`` lists library entries that shared a tag but ``enabled_default``
-    is false. Entries with no tag overlap are omitted.
+    Always-on entries (``enabled_default`` true) are matched even with no tag
+    overlap; ``matched_tags`` / ``sources`` are then empty. Tag-gated entries
+    (``enabled_default`` false) match only on tag overlap. ``skipped`` is kept
+    for forward compatibility and is empty under this rule. Entries that are
+    tag-gated with no overlap are omitted.
     """
 
     if not isinstance(lora_lib, LoraLibrary):
@@ -74,10 +78,8 @@ def match_loras(lora_lib: LoraLibrary, decision: DecisionPayload) -> tuple[list[
             if tag in selected and tag not in seen_tags:
                 seen_tags.add(tag)
                 overlap.append(tag)
-        if not overlap:
-            continue
-        if not entry.enabled_default:
-            skipped.append({"lora_id": lora_id, "reason": "enabled_default is false"})
+        always_on = entry.enabled_default
+        if not always_on and not overlap:
             continue
         sources: list[list[str]] = []
         for tag in overlap:
@@ -93,6 +95,7 @@ def match_loras(lora_lib: LoraLibrary, decision: DecisionPayload) -> tuple[list[
             }
         )
     return matched, skipped
+
 
 
 def aggregate_loras(
@@ -123,7 +126,7 @@ def aggregate_loras(
     notes = list(outcome.notes)
     if skipped:
         names = ", ".join(item["lora_id"] for item in skipped)
-        notes.append(f"Skipped LoRA(s) with enabled_default false: {names}.")
+        notes.append(f"Skipped LoRA(s): {names}.")
     if theme_result.errors:
         notes.append(
             "The decision already recorded theme errors. Matching still used the tags it kept."

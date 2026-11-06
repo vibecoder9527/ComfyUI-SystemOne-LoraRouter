@@ -81,6 +81,7 @@ class AggregateTests(unittest.TestCase):
             "strength_model": 1,
             "strength_clip": 1,
             "tags": ["should_not_apply"],
+            "enabled_default": False,
         }
         raw = {
             "version": 1,
@@ -91,6 +92,7 @@ class AggregateTests(unittest.TestCase):
                     "strength_model": entry.strength_model,
                     "strength_clip": entry.strength_clip,
                     "tags": list(entry.tags),
+                    "enabled_default": entry.enabled_default,
                 }
                 for entry in library.loras.values()
             ]
@@ -112,7 +114,8 @@ class AggregateTests(unittest.TestCase):
         self.assertEqual([item["lora_id"] for item in real_out.report["matched"]], ["style_realistic"])
         self.assertEqual(real_out.report["matched"][0]["strength_model"], 0.7)
 
-        disabled = TYPES.parse_lora_library(
+        # Tag-gated (enabled_default false) still applies when tags overlap.
+        gated = TYPES.parse_lora_library(
             {
                 "loras": [
                     {
@@ -130,17 +133,41 @@ class AggregateTests(unittest.TestCase):
                         "strength_clip": 0.9,
                         "tags": ["char_a"],
                     },
+                    {
+                        "lora_id": "always_on",
+                        "name": "always.safetensors",
+                        "strength_model": 0.5,
+                        "strength_clip": 0.5,
+                        "tags": ["never_selected"],
+                        "enabled_default": True,
+                    },
+                    {
+                        "lora_id": "gated_miss",
+                        "name": "miss.safetensors",
+                        "strength_model": 0.5,
+                        "strength_clip": 0.5,
+                        "tags": ["never_selected"],
+                        "enabled_default": False,
+                    },
                 ]
             }
         )
         out = AGG.aggregate_loras(
             model=object(),
             clip=None,
-            lora_lib=disabled,
+            lora_lib=gated,
             decision=as_payload(_chain().result),
         )
-        self.assertEqual([item["lora_id"] for item in out.report["matched"]], ["char_a"])
-        self.assertEqual(out.report["skipped"], [{"lora_id": "style_anime_v3", "reason": "enabled_default is false"}])
+        self.assertEqual(
+            [item["lora_id"] for item in out.report["matched"]],
+            ["always_on", "char_a", "style_anime_v3"],
+        )
+        by_id = {item["lora_id"]: item for item in out.report["matched"]}
+        self.assertEqual(by_id["style_anime_v3"]["matched_tags"], ["style_anime"])
+        self.assertEqual(by_id["always_on"]["matched_tags"], [])
+        self.assertEqual(by_id["always_on"]["sources"], [])
+        self.assertEqual(out.report["skipped"], [])
+        self.assertNotIn("gated_miss", by_id)
 
     def test_dedupe_case_and_stored_strengths(self):
         first = run_theme(

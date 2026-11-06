@@ -583,6 +583,7 @@ function renderLoras() {
       field("strength (model & clip)", `${path}.strength`, showNumber(displayedStrength(entry)), { decimal: true }),
       field("tags", `${path}.tags`, (entry.tags || []).join(", "), { kind: "tags" }),
       field("enabled_default", `${path}.enabled_default`, entry.enabled_default !== false, { check: true }),
+      hint("Checked: always apply. Unchecked: apply only when a selected tag overlaps."),
     ]);
     if (strengthsDiffer(entry)) {
       box.append(hint("strength_clip differs. The next valid write copies this strength to both strength_model and strength_clip."));

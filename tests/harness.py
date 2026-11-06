@@ -93,6 +93,9 @@ def lora_entries(*rows):
             item["tags"] = row["tags"]
         if "enabled_default" in row:
             item["enabled_default"] = row["enabled_default"]
+        else:
+            # Tests that omit the flag want tag-gated matching, not always-on.
+            item["enabled_default"] = False
         entries.append(item)
     return TYPES.parse_lora_library({"version": 1, "loras": entries})
 
