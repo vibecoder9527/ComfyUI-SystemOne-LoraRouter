@@ -1475,6 +1475,189 @@ console.log("ok");
         self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
         self.assertIn("ok", completed.stdout)
 
+    def test_editor_model_assigns_theme_and_option_ids(self):
+        model_js = (ROOT / "js" / "s1_model.js").read_text(encoding="utf-8")
+        self.assertIn("export function nextThemeId", model_js)
+        self.assertIn("export function nextOptionId", model_js)
+        self.assertIn("export function assignThemeIds", model_js)
+        self.assertIn("export function assignOptionIds", model_js)
+        self.assertIn("export function fieldPathsFromError", model_js)
+        self.assertNotIn("fallback_option_id", model_js)
+        node = shutil.which("node")
+        if node is None:
+            self.skipTest("node is not installed")
+        script = r"""
+import {
+  assignOptionIds,
+  assignThemeIds,
+  blankOption,
+  blankTheme,
+  commitModel,
+  fieldPathsFromError,
+  nextOptionId,
+  nextThemeId,
+  parseEditorDocument,
+} from "./js/s1_model.js";
+
+function assert(cond, message) {
+  if (!cond) {
+    console.error(message);
+    process.exit(1);
+  }
+}
+
+assert(nextThemeId([]) === "theme_1", "empty theme");
+assert(nextThemeId(["theme_1", "theme_3"]) === "theme_2", "theme gap");
+assert(nextThemeId(["art_style", "theme_1"]) === "theme_2", "manual theme stays out");
+assert(nextOptionId([]) === "option_1", "empty option");
+assert(nextOptionId(["option_1", "anime"]) === "option_2", "manual option stays out");
+assert(nextOptionId(["option_0", "Option_1"]) === "option_1", "only exact option_N is taken");
+
+const created = blankTheme();
+assert(created.theme_id === "", "blank theme id is filled later");
+assert(!Object.prototype.hasOwnProperty.call(created, "fallback_option_id"), "blank theme has no fallback");
+assert(created.none_option_id === "", "none stays on the blank theme");
+assert(blankOption().option_id === "", "blank option id is filled later");
+
+const draft = {
+  themes: [
+    blankTheme(),
+    {
+      theme_id: "theme_2",
+      title: "",
+      instructions: "",
+      select_mode: "single",
+      options: [blankOption(), { option_id: "anime", label: "", description: "", lora_bindings: [] }],
+    },
+  ],
+};
+assignThemeIds(draft);
+assert(draft.themes[0].theme_id === "theme_1", "first blank theme takes theme_1");
+assert(draft.themes[1].theme_id === "theme_2", "theme_2 kept");
+assert(draft.themes[1].options[0].option_id === "option_1", "blank option filled inside its theme");
+assert(draft.themes[1].options[1].option_id === "anime", "manual option kept");
+
+const perTheme = { options: [{ option_id: "" }, { option_id: "anime" }] };
+assignOptionIds(perTheme.options);
+assignOptionIds([{ option_id: "" }]);
+assert(perTheme.options[0].option_id === "option_1", "option ids do not leak across lists");
+
+const filled = commitModel("theme", {
+  themes: [
+    {
+      theme_id: "",
+      title: "A",
+      instructions: "i",
+      select_mode: "single",
+      options: [
+        { option_id: "anime", label: "a", description: "", lora_bindings: [] },
+        { option_id: "", label: "b", description: "", lora_bindings: [] },
+        { option_id: "option_1", label: "c", description: "", lora_bindings: [] },
+      ],
+    },
+    {
+      theme_id: "theme_1",
+      title: "B",
+      instructions: "i",
+      select_mode: "multi",
+      none_option_id: "option_1",
+      options: [{ option_id: "   ", label: "d", description: "", lora_bindings: [] }],
+    },
+  ],
+});
+assert(filled.ok, filled.error || "theme commit failed");
+assert(filled.doc.themes[0].theme_id === "theme_2", "blank theme fills the gap");
+assert(filled.doc.themes[0].options[0].option_id === "anime", "commit keeps manual option");
+assert(filled.doc.themes[0].options[1].option_id === "option_2", "blank option skips kept option_1");
+assert(filled.doc.themes[0].options[2].option_id === "option_1", "option_1 kept");
+assert(filled.doc.themes[1].theme_id === "theme_1", "commit keeps theme_1");
+assert(filled.doc.themes[1].options[0].option_id === "option_1", "option ids restart inside the theme");
+assert(filled.doc.themes[1].none_option_id === "option_1", "none kept");
+assert(!JSON.stringify(filled.doc).includes("fallback_option_id"), "emit omits fallback");
+
+const manual = commitModel("theme", {
+  themes: [{
+    theme_id: "art_style",
+    title: "t",
+    instructions: "i",
+    select_mode: "single",
+    none_option_id: "realistic",
+    options: [
+      { option_id: "anime", label: "a", description: "", lora_bindings: [] },
+      { option_id: "realistic", label: "r", description: "", lora_bindings: [] },
+    ],
+  }],
+});
+assert(manual.ok, manual.error || "manual theme failed");
+assert(manual.doc.themes[0].theme_id === "art_style", "manual theme id kept");
+assert(manual.doc.themes[0].none_option_id === "realistic", "none still emitted");
+
+const stale = parseEditorDocument("theme", JSON.stringify({
+  themes: [{
+    theme_id: "art_style",
+    title: "t",
+    instructions: "i",
+    select_mode: "single",
+    fallback_option_id: "realistic",
+    options: [{ option_id: "realistic", label: "r", description: "", lora_bindings: [] }],
+  }],
+}));
+assert(!stale.ok, "fallback_option_id is rejected");
+assert(String(stale.error).includes("fallback_option_id"), stale.error || "missing fallback error");
+assert(String(stale.error).includes("unknown field"), stale.error || "missing unknown-field error");
+
+const empty = commitModel("theme", { themes: [blankTheme()] });
+assert(!empty.ok, "empty theme is not written");
+
+const sequence = commitModel("sequence", {
+  steps: [{ step_id: "s1", theme_id: "art_style", enabled_by_default: true, dependencies: [] }],
+});
+assert(sequence.ok, sequence.error || "sequence commit failed");
+assert(sequence.doc.steps[0].theme_id === "art_style", "step theme_id is not auto-rewritten");
+
+assert(
+  JSON.stringify(fieldPathsFromError("themes[0].title must be a non-empty string")) ===
+    JSON.stringify(["themes.0.title"]),
+  "title path",
+);
+assert(
+  JSON.stringify(fieldPathsFromError("themes[0]: duplicate theme_id theme_1")) ===
+    JSON.stringify(["themes.0", "themes.0.theme_id"]),
+  "duplicate theme id",
+);
+assert(
+  JSON.stringify(fieldPathsFromError("themes[0].options[1]: duplicate option_id option_1")) ===
+    JSON.stringify(["themes.0.options.1", "themes.0.options.1.option_id"]),
+  "duplicate option id",
+);
+assert(
+  JSON.stringify(fieldPathsFromError("themes[0]: none_option_id foo is not an option of this theme")) ===
+    JSON.stringify(["themes.0", "themes.0.none_option_id"]),
+  "none path",
+);
+assert(
+  JSON.stringify(fieldPathsFromError("steps[0].dependencies[0].when: op eq requires exactly one option_id")) ===
+    JSON.stringify(["steps.0.dependencies.0.when", "steps.0.dependencies.0.when.option_ids"]),
+  "when option_ids",
+);
+assert(
+  JSON.stringify(fieldPathsFromError("steps[0].dependencies[0].actions[0]: rewrite_options JSON is invalid")) ===
+    JSON.stringify(["steps.0.dependencies.0.actions.0", "steps.0.dependencies.0.actions.0.rewrite_json"]),
+  "rewrite json path",
+);
+assert(JSON.stringify(fieldPathsFromError("Invalid JSON: nope")) === "[]", "unmapped error has no field");
+console.log("ok");
+"""
+        completed = subprocess.run(
+            [node, "--input-type=module", "--eval", script],
+            check=False,
+            capture_output=True,
+            text=True,
+            cwd=str(ROOT),
+        )
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        self.assertIn("ok", completed.stdout)
+
     def test_lora_library_editor_shows_readonly_id_and_one_strength(self):
         editors = (ROOT / "js" / "s1_editors.js").read_text(encoding="utf-8")
         start = editors.index("function renderLoras()")

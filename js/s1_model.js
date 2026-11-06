@@ -178,18 +178,14 @@ function checkTheme(data, path) {
   if (!isObject(data)) fail(`${path} must be an object`);
   rejectUnknown(
     data,
-    ["theme_id", "title", "instructions", "select_mode", "options", "fallback_option_id", "none_option_id"],
+    ["theme_id", "title", "instructions", "select_mode", "options", "none_option_id"],
     path,
   );
   if (!Array.isArray(data.options)) fail(`${path}.options must be a list`);
   const seen = new Set();
   const options = data.options.map((item, index) => checkOption(item, `${path}.options[${index}]`, seen));
   const known = new Set(options.map((option) => option.option_id));
-  const fallback = optionalId(data, "fallback_option_id", path);
   const noneId = optionalId(data, "none_option_id", path);
-  if (fallback !== null && !known.has(fallback)) {
-    fail(`${path}: fallback_option_id ${fallback} is not an option of this theme`);
-  }
   if (noneId !== null && !known.has(noneId)) {
     fail(`${path}: none_option_id ${noneId} is not an option of this theme`);
   }
@@ -199,7 +195,6 @@ function checkTheme(data, path) {
     instructions: requireText(data.instructions, `${path}.instructions`),
     select_mode: requireChoice(data.select_mode, SELECT_MODES, `${path}.select_mode`),
     options,
-    fallback_option_id: fallback,
     none_option_id: noneId,
   };
 }
@@ -462,6 +457,103 @@ export function assignLoraIds(model) {
   return model;
 }
 
+// Mirrors schema/theme_ids.py. theme_N is unique in the library.
+// option_N is unique inside one theme. Manual ids are kept.
+function nextPrefixedId(prefix, existingIds) {
+  const used = new Set();
+  if (Array.isArray(existingIds)) {
+    for (const item of existingIds) {
+      if (typeof item === "string" && item !== "") used.add(item);
+    }
+  }
+  let number = 1;
+  while (used.has(`${prefix}${number}`)) number += 1;
+  return `${prefix}${number}`;
+}
+
+export function nextThemeId(existingIds) {
+  return nextPrefixedId("theme_", existingIds);
+}
+
+export function nextOptionId(existingIds) {
+  return nextPrefixedId("option_", existingIds);
+}
+
+function themeIdKept(value) {
+  return typeof value === "string" && value.trim() !== "";
+}
+
+export function assignOptionIds(options) {
+  if (!Array.isArray(options)) return options;
+  const seen = [];
+  for (const option of options) {
+    if (option && themeIdKept(option.option_id)) seen.push(option.option_id);
+  }
+  for (const option of options) {
+    if (!option || typeof option !== "object") continue;
+    if (themeIdKept(option.option_id)) continue;
+    const id = nextOptionId(seen);
+    option.option_id = id;
+    seen.push(id);
+  }
+  return options;
+}
+
+export function assignThemeIds(model) {
+  const themes = model?.themes;
+  if (!Array.isArray(themes)) return model;
+  const seen = [];
+  for (const theme of themes) {
+    if (theme && themeIdKept(theme.theme_id)) seen.push(theme.theme_id);
+  }
+  for (const theme of themes) {
+    if (!theme || typeof theme !== "object") continue;
+    if (!themeIdKept(theme.theme_id)) {
+      const id = nextThemeId(seen);
+      theme.theme_id = id;
+      seen.push(id);
+    }
+    assignOptionIds(theme.options);
+  }
+  return model;
+}
+
+// Best-effort map from a validator message to editor data-path values.
+// Bracket indexes become dots: themes[0].title -> themes.0.title.
+export function fieldPathsFromError(message) {
+  const text = String(message || "");
+  const paths = [];
+  const seen = new Set();
+  const add = (path) => {
+    const normalized = String(path).replace(/\[(\d+)\]/g, ".$1");
+    if (!normalized || seen.has(normalized)) return;
+    seen.add(normalized);
+    paths.push(normalized);
+  };
+  const pattern = /\b((?:loras|themes|steps)(?:\[\d+\]|\.[A-Za-z_][\w]*)+)/g;
+  let match = pattern.exec(text);
+  while (match) {
+    add(match[1]);
+    match = pattern.exec(text);
+  }
+  const extras = [];
+  if (/duplicate theme_id/.test(text)) extras.push("theme_id");
+  if (/duplicate option_id/.test(text)) extras.push("option_id");
+  if (/duplicate lora_id/.test(text)) extras.push("lora_id");
+  if (/duplicate step_id/.test(text)) extras.push("step_id");
+  if (/\bnone_option_id\b/.test(text)) extras.push("none_option_id");
+  if (/rewrite_options/.test(text)) extras.push("rewrite_json");
+  if (/option_ids\b/.test(text) || /exactly one option_id/.test(text)) extras.push("option_ids");
+  if (extras.length && paths.length) {
+    const base = paths[0];
+    for (const name of extras) {
+      if (base.endsWith(`.${name}`) || base.split(".").includes(name)) continue;
+      add(`${base}.${name}`);
+    }
+  }
+  return paths;
+}
+
 function sharedStrength(entry, path) {
   const hasEditorField = entry && Object.prototype.hasOwnProperty.call(entry, "strength");
   const source = hasEditorField ? entry.strength : entry?.strength_model;
@@ -488,13 +580,13 @@ function documentFromLora(model) {
 }
 
 function documentFromTheme(model) {
+  if (model && Array.isArray(model.themes)) assignThemeIds(model);
   const themes = (model?.themes || []).map((theme) => ({
     theme_id: theme.theme_id ?? "",
     title: theme.title ?? "",
     instructions: theme.instructions ?? "",
     select_mode: theme.select_mode ?? "",
     options: (theme.options || []).map((option, index) => optionFromEditor(option, `options[${index}]`)),
-    fallback_option_id: blankToNull(theme.fallback_option_id),
     none_option_id: blankToNull(theme.none_option_id),
   }));
   return checkThemeLibrary({ version: 1, themes });
@@ -560,7 +652,6 @@ function emitTheme(checked) {
         select_mode: theme.select_mode,
         options: theme.options,
       };
-      if (theme.fallback_option_id) out.fallback_option_id = theme.fallback_option_id;
       if (theme.none_option_id) out.none_option_id = theme.none_option_id;
       return out;
     }),
@@ -633,7 +724,7 @@ export function commitModel(kind, model) {
 }
 
 export function blankLora() {
-  // lora_id stays blank until assignLoraIds (Add LoRA and Apply). Both strengths match.
+  // lora_id stays blank until assignLoraIds (Add LoRA and a valid write). Both strengths match.
   return { lora_id: "", name: "", strength_model: 0.8, strength_clip: 0.8, tags: [], enabled_default: true, meta: null };
 }
 
@@ -646,13 +737,13 @@ export function blankOption() {
 }
 
 export function blankTheme() {
+  // theme_id stays blank until assignThemeIds (Add Theme and a valid write).
   return {
     theme_id: "",
     title: "",
     instructions: "",
     select_mode: "single",
     options: [],
-    fallback_option_id: "",
     none_option_id: "",
   };
 }
