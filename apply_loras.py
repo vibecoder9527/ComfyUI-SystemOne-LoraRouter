@@ -1,11 +1,12 @@
 """Apply the aggregated LoRA list to MODEL and optional CLIP.
 
-SPEC §4.3. Skeleton hook:
+SPEC §4.3:
 
 - When ``comfy.sd.load_lora_for_models`` imports, call it. ``clip`` may be None
-  (``load_lora_for_models(model, None, ...)``).
+  (``load_lora_for_models(model, None, ...)``). CLIP out stays None when the
+  input clip was None.
 - When ComfyUI is not importable, no-op and record a debug note. That is the
-  skeleton path, not a missing-file error, so ``on_error`` does not raise.
+  offline fallback, not a missing-file error, so ``on_error`` does not raise.
 - When ComfyUI is available and a file is missing or fails to load:
   ``passthrough`` skips that LoRA and records an error; ``raise`` raises
   ``ApplyError`` and stops the loop.
@@ -16,9 +17,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-STUB_APPLY_NOTE = (
-    "STUB: apply_loras did not patch weights because comfy.sd.load_lora_for_models "
-    "is not importable. MODEL and CLIP are unchanged."
+APPLY_UNAVAILABLE_NOTE = (
+    "ComfyUI APIs unavailable: apply_loras did not patch weights because "
+    "comfy.sd.load_lora_for_models is not importable. MODEL and CLIP are unchanged."
 )
 
 
@@ -56,7 +57,7 @@ def apply_loras(
     api, import_error = _import_comfy()
     if api is None:
         detail = f"{type(import_error).__name__}: {import_error}" if import_error else "import failed"
-        outcome.notes.append(f"{STUB_APPLY_NOTE} ({detail})")
+        outcome.notes.append(f"{APPLY_UNAVAILABLE_NOTE} ({detail})")
         for item in selected:
             outcome.applied.append(_record(item, loaded=False))
         return outcome
@@ -83,7 +84,10 @@ def apply_loras(
                 raise ApplyError(
                     f"load_lora_for_models returned an unexpected value for lora_id {lora_id!r}"
                 )
-            outcome.model, outcome.clip = patched
+            patched_model, patched_clip = patched
+            outcome.model = patched_model
+            # SPEC §2.3 / §4.3: CLIP out remains None when the input clip was None.
+            outcome.clip = None if clip is None else patched_clip
             outcome.applied.append(_record(item, loaded=True))
         except ApplyError as exc:
             _handle_lora_error(outcome, item, on_error, str(exc))
