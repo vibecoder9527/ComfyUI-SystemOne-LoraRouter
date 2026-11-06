@@ -52,9 +52,41 @@ Invalid JSON on a library node fails that node. A library cannot be built from a
 
 **LoRA apply** uses `folder_paths.get_full_path`, `comfy.utils.load_torch_file`, and `comfy.sd.load_lora_for_models` when ComfyUI is importable (`clip` may be `None`). Outside ComfyUI it leaves MODEL and CLIP unchanged and says so in the report. Each applied row then has `loaded: false`. Unittest mocks those imports.
 
-## Still v2
+## Visual editors (v2)
 
-The sidebar UI editor is v2. This package is ComfyUI widgets and multiline JSON only. There is no custom frontend.
+The multiline JSON widgets are still the stored documents. The v2 editors change those same strings. Saving the workflow still writes the JSON onto the node. There is no fourth wire, and the prompt still sends the JSON widgets.
+
+Restart ComfyUI after installing so it loads `js/` (`WEB_DIRECTORY`).
+
+### How to open
+
+1. Add a LoRA Library, Theme Library, or Theme Sequence node.
+2. Open the sidebar tab **S1 Editors** (list icon). It edits the node you last opened from a button.
+3. Or click **Open visual editor** on the node. That selects the node, focuses the S1 Editors tab, and loads that node's JSON widget. The same item is on the node right-click menu.
+4. On a ComfyUI build without `app.extensionManager.registerSidebarTab`, the button opens a floating panel with the same editors.
+
+| Node | Widget the editor writes | What the form edits |
+| --- | --- | --- |
+| LoRA Library | `library_json` | LoRA entries: id, file name, strengths, tags, enabled default |
+| Theme Library | `library_json` | Themes, options, select mode, bindings, fallback and none ids |
+| Theme Sequence | `sequence_json` | Steps, theme id, and dependencies |
+
+### Using an editor
+
+- **Reload from node** reads the widget again. **Open visual editor** does that too, so unapplied form edits are replaced by the widget text.
+- **Apply to node** checks the form, writes pretty JSON into the widget, and marks the graph dirty. Typing does not write the widget.
+- Invalid JSON shows the error and the original text. Fix it and choose **Try form**, or keep editing the multiline widget on the node. Apply does not replace the widget until the text parses.
+- LoRA file names are typed by hand.
+
+### Known limitations
+
+- No live SystemOne API preview or dry-run from the UI.
+- `rewrite_options` is a JSON object (`keep_option_ids`, `add_options`, `remove_option_ids`, `patch_bindings`). The other action types have fields.
+- Requires a ComfyUI build that loads `WEB_DIRECTORY` extensions. Restart ComfyUI after install.
+- The sidebar API differs across ComfyUI versions. If `registerSidebarTab` is missing, the node button opens a modal instead.
+- Does not browse the `loras/` folder. Type file names manually.
+- The multiline JSON widgets remain the power-user path. Graph serialization is unchanged: the workflow stores the JSON on the node.
+- `meta` on a LoRA entry is kept on Apply, and the form does not edit it.
 
 ## Examples
 
