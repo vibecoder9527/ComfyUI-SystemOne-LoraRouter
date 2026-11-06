@@ -67,7 +67,7 @@ Restart ComfyUI after installing so it loads `js/` (`WEB_DIRECTORY`).
 
 | Node | Widget the editor writes | What the form edits |
 | --- | --- | --- |
-| LoRA Library | `library_json` | LoRA entries: id, file name (`name`), strengths, tags, enabled default |
+| LoRA Library | `library_json` | LoRA entries: read-only auto id (`lora_1`, `lora_2`, ...), file name (`name`), one strength for model and clip, tags, enabled default |
 | Theme Library | `library_json` | Themes, options, select mode, bindings, fallback and none ids |
 | Theme Sequence | `sequence_json`, `positive`, `negative` | Prompts (positive, then negative), steps, theme id, and dependencies |
 
@@ -87,6 +87,14 @@ Each entry's `name` is the relative file name under ComfyUI `models/loras`, the 
 - **Apply to node** is what saves the name into `library_json`. The picker does not copy or rename files on disk.
 - A name that is not in the current list is kept. Apply still writes it.
 
+### LoRA id and strength
+
+The LoRA Library form does not edit `lora_id`. The card title and a read-only field show it. **Add LoRA** assigns the smallest free id, `lora_1`, then `lora_2`, filling gaps such as a missing `lora_2`. Apply fills a missing or blank id the same way before it writes `library_json`. An id that is already set is kept, including older manual ids such as `style_anime_v3`. Theme bindings are not rewritten. They still cite `lora_id` by hand.
+
+The library form has one control, **strength (model & clip)**. Apply writes that number to both `strength_model` and `strength_clip`. The stored JSON does not gain a `strength` key, and both keys stay required. If a loaded entry has two different strengths, the form shows `strength_model`, and the next Apply copies that value onto `strength_clip`. Theme option bindings still have their own optional `strength_model` and `strength_clip` boxes. A blank binding strength still means the library default.
+
+Old library JSON keeps working. Manual ids stay. Entries that already store different `strength_model` and `strength_clip` values still validate. Apply is what copies one number onto both keys.
+
 ### Prompts on Theme Sequence
 
 The Theme Sequence editor starts with **Prompts**: the positive textarea, then the negative textarea directly under it. Those boxes are the node widgets `positive` and `negative`. They are not fields inside `sequence_json`.
@@ -104,6 +112,7 @@ On the node, `negative` is a required multiline string directly under `positive`
 - Workflows saved before `negative` moved under `positive` may have stored widget values by position. Builds that save widget names reload the right fields. If an old workflow only has an ordered values list, check that `negative` did not land in `sequence_json` the first time you open it.
 - The multiline JSON widgets remain the power-user path. Graph serialization is unchanged: the workflow stores the JSON on the node. There is still no fourth sequence wire.
 - `meta` on a LoRA entry is kept on Apply, and the form does not edit it.
+- The LoRA Library editor does not keep different `strength_model` and `strength_clip` values on one entry. It shows `strength_model`, and Apply writes that number to both. Edit the JSON widget when one library entry must keep two strengths. Theme bindings can still override them separately.
 
 ## Examples
 
