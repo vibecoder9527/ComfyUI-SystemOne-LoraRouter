@@ -1,0 +1,71 @@
+"""Apply each tag-matched LoRA once to MODEL and optional CLIP."""
+
+from __future__ import annotations
+
+from ..aggregate import aggregate_loras
+from ..schema.types import SchemaError
+from ..theme_engine import dump_report
+
+CATEGORY = "SystemOne/LoraRouter"
+
+
+class S1LoraAggregate:
+    """Dedupe library LoRAs by id and patch weights with apply_loras."""
+
+    CATEGORY = CATEGORY
+    FUNCTION = "apply"
+    RETURN_TYPES = ("MODEL", "CLIP", "STRING")
+    RETURN_NAMES = ("model", "clip", "report_json")
+    OUTPUT_TOOLTIPS = (
+        "MODEL after each matched LoRA is applied once, or the input MODEL when nothing was patched.",
+        "CLIP after those LoRAs. None when clip was left unconnected.",
+        "Tags, theme decisions, matched LoRAs, apply errors, and notes.",
+    )
+    DESCRIPTION = (
+        "Match S1_LORA_LIB tags to the tags on an S1_THEME_RESULT. "
+        "A LoRA matches when any of its tags was contributed and enabled_default is true. "
+        "Each lora_id is applied once, in lora_id order, with its library strengths. "
+        "on_error=passthrough returns the input MODEL and CLIP when the inputs are "
+        "unusable or a weight file fails. Theme errors already stored on the result "
+        "do not cancel tags that upstream themes contributed."
+    )
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "model": ("MODEL",),
+                "lora_lib": ("S1_LORA_LIB", {"forceInput": True}),
+                "theme_result": ("S1_THEME_RESULT", {"forceInput": True}),
+            },
+            "optional": {
+                "clip": ("CLIP",),
+                "on_error": (["passthrough", "raise"], {"default": "passthrough"}),
+            },
+        }
+
+    def apply(self, model, lora_lib, theme_result, clip=None, on_error="passthrough"):
+        try:
+            outcome = aggregate_loras(
+                model=model,
+                clip=clip,
+                lora_lib=lora_lib,
+                theme_result=theme_result,
+                on_error=on_error,
+            )
+        except SchemaError as exc:
+            if on_error == "raise":
+                raise
+            report = {
+                "tags": [],
+                "themes": [],
+                "matched": [],
+                "skipped": [],
+                "applied": [],
+                "errors": [str(exc)],
+                "notes": [
+                    "on_error=passthrough: returning the input MODEL and CLIP unchanged."
+                ],
+            }
+            return (model, clip, dump_report(report))
+        return (outcome.model, outcome.clip, dump_report(outcome.report))

@@ -1,14 +1,12 @@
 # ComfyUI-SystemOne-LoraRouter
 
-ComfyUI custom nodes: SystemOne LoRA Router (theme library / LoRA library / theme sequence)
+ComfyUI custom nodes that ask SystemOne which theme options fit a prompt, turn the selected options into tags, and apply each matching LoRA once.
 
-Three canvas nodes. LoRA Library and Theme Library feed Theme Sequence. Theme Sequence POSTs to SystemOne, aggregates LoRA bindings, and outputs MODEL. The contract is [SPEC.md](SPEC.md).
+The contract is [SPEC.md](SPEC.md). Moving an old theme library or theme sequence onto these nodes is [MIGRATION.md](MIGRATION.md).
 
 ## Install
 
 The folder name inside ComfyUI `custom_nodes` must stay `ComfyUI-SystemOne-LoraRouter`.
-
-Clone:
 
 ```bash
 cd /path/to/ComfyUI/custom_nodes
@@ -21,133 +19,86 @@ Or symlink a checkout you already have:
 ln -s /path/to/ComfyUI-SystemOne-LoraRouter /path/to/ComfyUI/custom_nodes/ComfyUI-SystemOne-LoraRouter
 ```
 
-Restart ComfyUI after installing. This package uses the Python standard library only (`urllib.request`, `json`, `uuid`, `os`). `requirements.txt` lists no third-party packages, so there is nothing to pip-install.
+Restart ComfyUI after installing. This package uses the Python standard library only. `requirements.txt` lists no third-party packages.
 
 The nodes show up under **SystemOne → LoraRouter**:
 
 | Node | Class | Output |
 | --- | --- | --- |
 | LoRA Library | `S1LoraLibrary` | `S1_LORA_LIB` |
-| Theme Library | `S1ThemeLibrary` | `S1_THEME_LIB` |
-| Theme Sequence | `S1ThemeSequence` | `MODEL`, `CLIP`, `STRING` (`report_json`) |
+| Theme | `S1Theme` | `S1_THEME_RESULT`, `report_json` |
+| Theme Collect | `S1ThemeCollect` | `S1_THEME_RESULT` |
+| LoRA Aggregate | `S1LoraAggregate` | `MODEL`, `CLIP`, `report_json` |
 
-Wire both libraries into Theme Sequence, along with `model`, the positive prompt (`positive`), and `sequence_json`. The negative prompt (`negative`) is the widget directly under `positive`. A blank negative is sent as `""`. Connect the `CLIP` output only when a clip input is connected too. With no clip input, the second output is `None`.
+`S1ThemeLibrary` and `S1ThemeSequence` are removed. Do not look for them on the canvas.
 
-Set the API key on Theme Sequence, or export `SYSTEM_ONE_API_KEY` and leave the widget blank. A non-empty widget wins. The default endpoint is `https://system-one.dev/v1/systemone`. A blank `api_model` becomes the fallback `unspecified`. SPEC §6 leaves the production model id open, so this package does not hard-code one. A live SystemOne call requires a key.
+## Wire a decision tree
+
+Themes default to `disabled`. A disabled theme does not call SystemOne and does not add tags.
+
+1. Add a LoRA Library and paste `examples/lora_library.minimal.json`, or start from `examples/lora_library.empty.json` and use **Open visual editor**.
+2. Add a Theme. Set `run` to `enabled`. Paste `examples/theme.art_style.json` into `theme_json`. This is the root. `enable_json` may stay `examples/enable.empty.json`.
+3. Add another Theme. Set `run` to `when_upstream`. Paste `examples/theme.character_pack.json` and `examples/enable.when_anime.json`. Connect the first Theme's `theme_result` to this node's `upstream` input.
+4. Add LoRA Aggregate. Connect `MODEL`, the LoRA Library, and the last Theme's `theme_result`. Connect `CLIP` only when you want CLIP patched. With no clip input, the CLIP output is `None`.
+
+`when_upstream` turns the second theme on only when the upstream selection matches the clauses. `enable.when_anime.json` matches theme `art_style` when the selection includes option `anime`. That is selected-option targeting, not a bare on/off flag. A later theme can also target `eq`, `neq`, `includes_all`, `skipped`, or `answered`. See SPEC for the match table.
+
+Put further themes on the same chain. Each output already contains the upstream decisions, so the next theme can target any earlier `theme_id`. One chain is the supported way to build a tree: a theme whose clauses miss simply records `skipped` and passes the earlier tags through.
+
+Theme Collect joins two results that do not share a `theme_id` (two independent roots, for example). Wire Collect's output into Aggregate or into another Collect. Do not collect two branches that both descend from the same theme. Both results already contain that theme, and a repeated `theme_id` raises. SPEC shows the chain to use instead.
+
+The character theme runs only after the art-style theme selects `anime`. Its options contribute tags `char_a` and `char_b`. The library entry `char_a` has tag `char_a`, so Aggregate applies `character_a.safetensors` at the library strength `0.9` / `0.9`. The art-style option `anime` contributes `style_anime`, which applies `anime_style_v3.safetensors` at `0.8` / `0.8`. Option `none` is `none_option_id`. If it is selected, its tag `should_not_apply` is not contributed. `char_b` matches no library entry, so it adds no LoRA.
+
+Each theme has its own positive and negative prompts. Positive is the widget above negative. A blank negative is sent as `""`. Prompts are not copied from the upstream theme.
+
+Set the API key on each Theme that calls SystemOne, or export `SYSTEM_ONE_API_KEY` and leave the widget blank. A non-empty widget wins. Disabled themes do not call the API. The default endpoint is `https://system-one.dev/v1/systemone`. A blank `api_model` becomes `unspecified`.
 
 JSON widgets set `dynamicPrompts` off so `{` stays literal JSON.
 
-## What this package runs
+## What a run does
 
-Validation of library, theme, and sequence JSON is real (`schema/types.py`). The walk in `sequence_engine.py` is real:
+- `run=disabled` parses the documents, appends a skipped decision, and returns. No HTTP.
+- `run=enabled` always decides. Stored enable rules do not gate it.
+- `run=when_upstream` decides only when the clauses match. An empty clause list matches nothing.
+- `single` sends a SystemOne `choice` question. One remaining option is selected without a call. An unknown choice fails. A confidence below `min_confidence` is kept and noted. There is no `fallback_option_id`.
+- `multi` sends one `noul` question per option. A score at or above `noul_threshold` (default `0.5`) selects it. More than 32 options are split across requests.
+- LoRA Aggregate keeps a LoRA when any of its tags was contributed and `enabled_default` is true. The same `lora_id` is applied once, in `lora_id` order, at the library strengths.
+- `on_error=passthrough` on a Theme records the API or choice failure and keeps upstream tags. Invalid JSON is not that path: it raises, and the graph stops. Aggregate's `on_error` applies to weight loading. A bad wire on passthrough returns the input MODEL and CLIP.
 
-- `select_mode: single` sends a SystemOne `choice` question. If rewrite leaves one option, the step skips the call and takes that option. A choice that is not an option fails the step. When `confidence` is present and below `min_confidence`, the choice is kept and the report notes `low_confidence_kept`.
-- `select_mode: multi` sends one `noul` question per option. `noul >= noul_threshold` selects it. More than 32 options are split across requests that share the same state.
-- Dependencies are OR. Each match runs its actions in order: `enable_step`, `disable_step`, `rewrite_options`, `rewrite_instructions`, `set_select_mode`. Rewrites edit a runtime copy of the theme. The Theme Library object stays as the library node built it.
-- `on_error=passthrough` (the default) returns the input MODEL and CLIP and writes the failure into `report_json`. `raise` stops the graph. When ComfyUI is importable, a missing LoRA file is skipped on passthrough and listed in `errors`.
+Outside ComfyUI, weight files are not patched. The aggregate report says so. Inside ComfyUI, a missing file is skipped on passthrough and listed in `errors`.
 
-Invalid JSON on a library node fails that node. A library cannot be built from a broken document. Runtime failures belong to Theme Sequence's `on_error`.
+The HTTP client is live (`systemone/client.py`): POST JSON, `Authorization: Bearer …`, `Idempotency-Key: <uuid4>`. Tests mock `urllib` and do not send a request.
 
-**SystemOne HTTP** is live. `systemone/client.py` POSTs JSON with `Authorization: Bearer …` and `Idempotency-Key: <uuid4>` via `urllib.request`. Choice reads `answers[qid].choice`; noul reads `answers[qid].noul`. A missing key raises before a socket is opened.
+## Visual editor
 
-**LoRA apply** uses `folder_paths.get_full_path`, `comfy.utils.load_torch_file`, and `comfy.sd.load_lora_for_models` when ComfyUI is importable (`clip` may be `None`). Outside ComfyUI it leaves MODEL and CLIP unchanged and says so in the report. Each applied row then has `loaded: false`. Unittest mocks those imports.
+The sidebar tab is gone. Nothing in this package registers an S1 Editors sidebar.
 
-## Visual editors (v2)
+**Open visual editor** sits on LoRA Library and Theme. It also appears on the node right-click menu. The button opens a modal and edits that node's widgets. Theme Collect and LoRA Aggregate do not have the button.
 
-The multiline JSON widgets are still the stored documents. The v2 editors change those same strings. Saving the workflow still writes the JSON onto the node. There is no fourth wire, and the prompt still sends the JSON widgets.
+Valid edits reach the widgets after about 220ms. Invalid fields get a red outline (`s1-invalid`) and are not written. A Theme write updates `theme_json`, `enable_json`, `positive`, `negative`, and `run` together, or it updates none of them. There is no Apply to node button and no Reload from node button.
 
-Restart ComfyUI after installing so it loads `js/` (`WEB_DIRECTORY`).
+`lora_id`, `theme_id`, and `option_id` are assigned when you add a row and are read-only. Existing ids, including manual ones, stay. The form on one node cannot see the others, so a blank theme id becomes `theme_1` on that node. If a chain would repeat it, type a unique id into the JSON widget once. The form keeps that id. Enable clauses use an editable **upstream theme_id** so you can name the theme you are targeting. One strength control writes `strength_model` and `strength_clip`. The LoRA name can be picked from the ComfyUI loras list or typed.
 
-### How to open
+Restart ComfyUI after installing so it loads `js/`.
 
-1. Add a LoRA Library, Theme Library, or Theme Sequence node.
-2. Open the sidebar tab **S1 Editors** (list icon). It edits the node you last opened from a button.
-3. Or click **Open visual editor** on the node. That selects the node, focuses the S1 Editors tab, and loads that node's JSON widget. The same item is on the node right-click menu.
-4. On a ComfyUI build without `app.extensionManager.registerSidebarTab`, the button opens a floating panel with the same editors.
+## Tests
 
-| Node | Widget the editor writes | What the form edits |
-| --- | --- | --- |
-| LoRA Library | `library_json` | LoRA entries: read-only auto id (`lora_1`, `lora_2`, ...), file name (`name`), one strength for model and clip, tags, enabled default |
-| Theme Library | `library_json` | Themes and options with read-only auto ids (`theme_1`, `option_1`, ...), select mode, bindings, and an optional `none_option_id` |
-| Theme Sequence | `sequence_json`, `positive`, `negative` | Prompts (positive, then negative), steps, an editable theme id, and dependencies |
-
-### Using an editor
-
-Opening the editor loads that node's widgets into the form. On Theme Sequence it also loads `positive` and `negative`.
-
-Valid edits are written to those widgets after a short pause (about 220ms) and the graph is marked dirty when the text changes. Saving the workflow still stores the widgets. There is no separate Apply or Reload action.
-
-An invalid draft stays in the editor. The node keeps the last valid JSON. The error is shown, and the failing field is drawn with a red outline (CSS class `s1-invalid`). The validator reports one error at a time, so the outline follows that field. In the raw JSON box the outline is on the box itself.
-
-Theme Sequence writes `positive`, `negative`, and `sequence_json` on the same valid update. Invalid sequence JSON blocks that write, including the prompts.
-
-Raw JSON that does not parse stays in the raw box. **Try form** parses it and, when the document is valid, writes the node and opens the form. A pause does the same write if the raw text becomes valid on its own.
-
-### LoRA file name
-
-Each entry's `name` is the relative file name under ComfyUI `models/loras`, the same string the stock Lora Loader shows. SPEC has no separate path field. The picker writes that string into `name`.
-
-- Type a name yourself. The text box stays editable, and its suggestions use the same list when ComfyUI returned one.
-- **Browse loras…** opens a filterable list on that entry. Choosing a row copies the relative name into `name`. **Hide lora list** closes it.
-- **Refresh loras** asks ComfyUI again. The editor reads `/object_info` for `LoraLoader` or `LoraLoaderModelOnly` and uses the `lora_name` combo. If that list is missing, it tries `api.getModels("loras")` and then `/models/loras`.
-- A valid edit writes the name into `library_json`. The picker does not copy or rename files on disk.
-- A name that is not in the current list is kept. The next valid write still stores it.
-
-### LoRA id and strength
-
-The LoRA Library form does not edit `lora_id`. The card title and a read-only field show it. **Add LoRA** assigns the smallest free id, `lora_1`, then `lora_2`, filling gaps such as a missing `lora_2`. A valid write fills a missing or blank id the same way before it writes `library_json`. An id that is already set is kept, including older manual ids such as `style_anime_v3`. Theme bindings are not rewritten. They still cite `lora_id` by hand.
-
-The library form has one control, **strength (model & clip)**. A valid write puts that number on both `strength_model` and `strength_clip`. The stored JSON does not gain a `strength` key, and both keys stay required. If a loaded entry has two different strengths, the form shows `strength_model`, and the next valid write copies that value onto `strength_clip`. Theme option bindings still have their own optional `strength_model` and `strength_clip` boxes. A blank binding strength still means the library default.
-
-Old library JSON keeps working. Manual ids stay. Entries that already store different `strength_model` and `strength_clip` values still validate. The next valid write is what copies one number onto both keys.
-
-### Theme id and option id
-
-The Theme Library form does not edit `theme_id` or `option_id`. Card titles and read-only fields show them. **Add Theme** assigns the smallest free `theme_N`. **Add Option** assigns the smallest free `option_N` inside that theme, so two themes may both use `option_1`. A valid write fills an id that is still blank. An id that is already set is kept, including older manual ids such as `art_style` and `anime`. Removing a card leaves the other ids as they are.
-
-Sequence steps keep an editable `theme_id`. Filling theme ids does not rewrite steps.
-
-`none_option_id` remains optional. The control lists that theme's option ids, plus unset. It must name an option on the same theme. `fallback_option_id` is removed. JSON that still contains it fails validation as an unknown field. A choice of `none` is an ordinary option id when the theme defines that option.
-
-### Prompts on Theme Sequence
-
-The Theme Sequence editor starts with **Prompts**: the positive textarea, then the negative textarea directly under it. Those boxes are the node widgets `positive` and `negative`. They are not fields inside `sequence_json`. A valid sequence writes them together with `sequence_json`. An invalid sequence leaves the JSON and the prompt widgets unchanged.
-
-On the node, `negative` is a required multiline string directly under `positive`. `clip` stays optional. A blank negative is still sent as `""`.
-
-### Known limitations
-
-- Valid form edits reach the node after about 220ms. An invalid draft is kept locally, with a red outline on the failing field, and the widget stays on the last valid JSON.
-- The outline follows the first error the validator reports. The next error is shown after that field is fixed.
-- Opening the editor loads the widgets again. That replaces the draft, including an invalid draft that was never written.
-- While the editor is on screen and the draft is valid and matches the last write, it polls the widgets about twice a second. A different widget string, or a different prompt on Theme Sequence, reloads the form. This package has no ComfyUI widget-change hook, so outside edits show up only through that poll, and only while the sidebar or the modal is visible.
-- A draft that is invalid, or still inside the write pause, is left in place. The next valid write can replace an outside edit made during that pause.
-- Switching nodes writes a valid paused edit to the previous node. An invalid draft is dropped.
-- Raw JSON is written when it parses. Until then the raw box has the red outline and the node is unchanged.
-- No live SystemOne API preview or dry-run from the UI.
-- `rewrite_options` is a JSON object (`keep_option_ids`, `add_options`, `remove_option_ids`, `patch_bindings`). The other action types have fields.
-- Requires a ComfyUI build that loads `WEB_DIRECTORY` extensions. Restart ComfyUI after install.
-- The sidebar API differs across ComfyUI versions. If `registerSidebarTab` is missing, the node button opens a modal instead.
-- The LoRA list needs a running ComfyUI. It is empty when ComfyUI is offline, when `/object_info` has no `lora_name` list, or when `models/loras` has no files. The editor stays usable: type the relative name. Typed names still work and are what `name` stores.
-- The list is relative names (`folder/file.safetensors`), not a full disk path. **Refresh loras** after you add files. ComfyUI rebuilds that combo when `/object_info` is requested.
-- Workflows saved before `negative` moved under `positive` may have stored widget values by position. Builds that save widget names reload the right fields. If an old workflow only has an ordered values list, check that `negative` did not land in `sequence_json` the first time you open it.
-- The multiline JSON widgets remain the power-user path. Graph serialization is unchanged: the workflow stores the JSON on the node. There is still no fourth sequence wire.
-- `meta` on a LoRA entry is kept when a valid edit is written, and the form does not edit it.
-- The LoRA Library editor does not keep different `strength_model` and `strength_clip` values on one entry. It shows `strength_model`, and the next valid write puts that number on both. Edit the JSON widget when one library entry must keep two strengths. Theme bindings can still override them separately.
-
-## Examples
-
-| File | Contents |
-| --- | --- |
-| `examples/lora_library.empty.json` | Widget default |
-| `examples/theme_library.empty.json` | Widget default |
-| `examples/sequence.empty.json` | Widget default |
-| `examples/*.minimal.json` | SPEC §5: two themes, one dependency, three LoRAs |
-
-The minimal sequence is: prompt leans anime → s1 selects `anime` → enable s2, keep `waifu_a` → list `char_a` and `style_anime_v3`. Weights are patched only when the package runs inside ComfyUI and those files exist under `loras/`. Unittest mocks HTTP (and ComfyUI) so it needs no live key and no ComfyUI install.
-
-## Check
+From the repo root:
 
 ```bash
-python3 -m unittest tests.test_skeleton
+python3 -m unittest
+python3 -m compileall -q -f .
+node --check js/s1_model.js
+node --check js/s1_editors.js
 ```
+
+Unittest discovers `tests/test_*.py`. It does not call SystemOne and does not need an API key. No browser pass is part of this suite. The editor checks are source and model tests, not a click-through in ComfyUI.
+
+## Limitations
+
+- Modal sync polls about every 500ms while the modal is visible. It does not hook widget changes.
+- Tag match is an exact string overlap. A LoRA with `enabled_default: false` is skipped even when a tag matches.
+- Old `lora_bindings`, per-binding strengths, `strength_conflict`, and `rewrite_*` actions are not applied at runtime.
+- Theme Collect rejects a repeated `theme_id`, so a diamond merge of two children of the same parent is not the supported graph.
+- `apply_loras` is a no-op when ComfyUI is not importable.
+- There is no in-editor preview of a SystemOne answer.

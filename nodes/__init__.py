@@ -1,7 +1,6 @@
-"""ComfyUI node classes for the SystemOne LoRA router."""
+"""Node classes live in submodules so the package root can import them.
 
-from .lora_library import S1LoraLibrary
-from .theme_library import S1ThemeLibrary
-from .theme_sequence import S1ThemeSequence
-
-__all__ = ["S1LoraLibrary", "S1ThemeLibrary", "S1ThemeSequence"]
+This file stays importable on its own. ``python3 -m unittest`` loads every
+package under the repo root, and a relative import of ``..schema`` from here
+would fail in that top-level import.
+"""

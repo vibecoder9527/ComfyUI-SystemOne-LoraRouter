@@ -1,21 +1,19 @@
-// Visual editors for LoRA Library, Theme Library, and Theme Sequence.
+// Visual editor modal for LoRA Library and Theme.
 // ComfyUI loads this module because __init__.py exports WEB_DIRECTORY = "./js".
+// The modal edits the node widgets. Invalid drafts are not written.
 
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import {
-  ACTION_TYPES,
+  ENABLE_MATCH,
+  ENABLE_OPS,
+  RUN_MODES,
   SELECT_MODES,
-  WHEN_OPS,
   assignLoraIds,
-  assignThemeIds,
-  blankAction,
-  blankBinding,
-  blankDependency,
+  assignThemeDocument,
+  blankClause,
   blankLora,
   blankOption,
-  blankStep,
-  blankTheme,
   commitModel,
   fieldPathsFromError,
   loraNamesFromInfo,
@@ -24,33 +22,40 @@ import {
   splitList,
 } from "./s1_model.js";
 
-const TAB_ID = "s1-lora-router";
 const BUTTON_NAME = "Open visual editor";
 const BUTTON_LABEL = "Open visual editor";
 
 const NODE_SPECS = {
   S1LoraLibrary: { kind: "lora", widget: "library_json", title: "LoRA Library" },
-  S1ThemeLibrary: { kind: "theme", widget: "library_json", title: "Theme Library" },
-  S1ThemeSequence: { kind: "sequence", widget: "sequence_json", title: "Theme Sequence" },
+  S1Theme: {
+    kind: "theme",
+    widget: "theme_json",
+    title: "Theme",
+    prompts: true,
+    enableWidget: "enable_json",
+    runWidget: "run",
+  },
 };
 
 const FACTORIES = {
   lora: blankLora,
-  theme: blankTheme,
   option: blankOption,
-  binding: blankBinding,
-  step: blankStep,
-  dependency: blankDependency,
-  action: () => blankAction("enable_step"),
+  clause: blankClause,
 };
 
 const OP_HINT = {
-  eq: "Selected option equals this id. Use one id.",
-  neq: "Selected option is not this id. Use one id.",
-  includes_any: "Selected set intersects these ids.",
-  includes_all: "Selected set contains every id.",
-  skipped: "The earlier step was skipped. No option ids.",
-  answered: "The earlier step returned an answer. No option ids.",
+  eq: "Upstream selection equals this one option id.",
+  neq: "Upstream answered and the selection is not this one option id. A skip does not match.",
+  includes_any: "Upstream selection intersects these option ids.",
+  includes_all: "Upstream selection contains every option id.",
+  skipped: "That upstream theme was skipped. No option ids.",
+  answered: "That upstream theme returned a selection. No option ids.",
+};
+
+const RUN_HINT = {
+  disabled: "Disabled: SystemOne is not called and this theme adds no tags.",
+  enabled: "Enabled: this theme always decides. Stored enable rules are ignored.",
+  when_upstream: "When upstream: this theme decides only if the clauses match the upstream result.",
 };
 
 const CSS = `
@@ -187,12 +192,15 @@ const state = {
   kind: null,
   widgetName: null,
   model: null,
+  enable: null,
   raw: "",
+  enableRaw: "",
   message: "",
   tone: "",
   openLoraBrowse: "",
   positive: "",
   negative: "",
+  run: "disabled",
   clean: true,
   invalidPaths: [],
   writeTimer: null,
@@ -208,8 +216,6 @@ let headerEl = null;
 let messageEl = null;
 let bodyEl = null;
 let modalEl = null;
-let sidebarReady = false;
-let tabRegistered = false;
 let styleInjected = false;
 let escapeBound = false;
 
@@ -332,15 +338,10 @@ function field(label, path, value, options = {}) {
   input.autocomplete = "off";
   if (options.kind) input.dataset.kind = options.kind;
   if (options.rerender) input.dataset.rerender = options.rerender;
+  if (options.scope) input.dataset.scope = options.scope;
   if (options.mono || options.code) input.spellcheck = false;
   if (options.code) input.classList.add("s1-code");
   return wrap;
-}
-
-function row(left, right) {
-  const node = el("div", "s1-row");
-  node.append(left, right);
-  return node;
 }
 
 function card(title, controls, children) {
@@ -354,12 +355,16 @@ function card(title, controls, children) {
   return box;
 }
 
-function listButtons(listPath, index, length) {
-  const up = button("Up", "up", { list: listPath, index });
-  const down = button("Down", "down", { list: listPath, index });
+function listButtons(listPath, index, length, scope) {
+  const up = button("Up", "up", { list: listPath, index, scope });
+  const down = button("Down", "down", { list: listPath, index, scope });
   if (index === 0) up.disabled = true;
   if (index === length - 1) down.disabled = true;
-  return [up, down, button("Remove", "remove", { list: listPath, index })];
+  return [up, down, button("Remove", "remove", { list: listPath, index, scope })];
+}
+
+function scopedModel(scope) {
+  return scope === "enable" ? state.enable : state.model;
 }
 
 function getByPath(root, path) {
@@ -380,21 +385,25 @@ function syncPromptsFromDom() {
     if (input.dataset.prompt === "positive") state.positive = input.value;
     else if (input.dataset.prompt === "negative") state.negative = input.value;
   });
+  const run = rootEl.querySelector("[data-run='1']");
+  if (run) state.run = run.value;
 }
 
 function syncFromDom() {
   if (!rootEl) return;
   syncPromptsFromDom();
-  if (!state.model) {
-    const raw = rootEl.querySelector("[data-raw='1']");
-    if (raw) state.raw = raw.value;
-    return;
-  }
+  const raw = rootEl.querySelector("[data-raw='theme']");
+  if (raw) state.raw = raw.value;
+  const enableRaw = rootEl.querySelector("[data-raw='enable']");
+  if (enableRaw) state.enableRaw = enableRaw.value;
   rootEl.querySelectorAll("[data-path]").forEach((input) => {
+    const scope = input.dataset.scope === "enable" ? "enable" : "model";
+    const root = scope === "enable" ? state.enable : state.model;
+    if (!root || input.readOnly) return;
     const path = input.dataset.path;
-    if (input.dataset.kind === "tags" || input.dataset.kind === "ids") setPath(state.model, path, splitList(input.value));
-    else if (input.type === "checkbox") setPath(state.model, path, input.checked);
-    else setPath(state.model, path, input.value);
+    if (input.dataset.kind === "tags" || input.dataset.kind === "ids") setPath(root, path, splitList(input.value));
+    else if (input.type === "checkbox") setPath(root, path, input.checked);
+    else setPath(root, path, input.value);
   });
 }
 
@@ -433,7 +442,7 @@ async function fetchLoraNames() {
       const names = loraNamesFromInfo(await api.getNodeDefs());
       if (names) return { names, note: "" };
     } catch (exc) {
-      console.warn("[S1 Editors] getNodeDefs failed", exc);
+      console.warn("[S1] getNodeDefs failed", exc);
     }
   }
   for (const route of ["/object_info/LoraLoader", "/object_info/LoraLoaderModelOnly", "/object_info"]) {
@@ -441,7 +450,7 @@ async function fetchLoraNames() {
       const names = loraNamesFromInfo(await readJson(route));
       if (names) return { names, note: "" };
     } catch (exc) {
-      console.warn(`[S1 Editors] ${route} failed`, exc);
+      console.warn(`[S1] ${route} failed`, exc);
     }
   }
   if (api && typeof api.getModels === "function") {
@@ -449,14 +458,14 @@ async function fetchLoraNames() {
       const names = loraNamesFromModels(await api.getModels("loras"));
       if (names) return { names, note: "" };
     } catch (exc) {
-      console.warn("[S1 Editors] getModels(loras) failed", exc);
+      console.warn("[S1] getModels(loras) failed", exc);
     }
   }
   try {
     const names = loraNamesFromModels(await readJson("/models/loras"));
     if (names) return { names, note: "" };
   } catch (exc) {
-    console.warn("[S1 Editors] /models/loras failed", exc);
+    console.warn("[S1] /models/loras failed", exc);
   }
   return { names: [], note: EMPTY_LORA_HINT };
 }
@@ -477,7 +486,7 @@ function ensureLoraCatalog() {
     })
     .catch((exc) => {
       if (token !== loraCatalogToken) return;
-      console.warn("[S1 Editors] LoRA list failed", exc);
+      console.warn("[S1] LoRA list failed", exc);
       loraCatalog = { status: "ready", names: [], note: EMPTY_LORA_HINT };
       if (state.kind === "lora" && bodyEl) {
         syncFromDom();
@@ -509,7 +518,7 @@ function syncLoraDatalist() {
       list.append(option);
     }
   } catch (exc) {
-    console.warn("[S1 Editors] could not build the LoRA datalist", exc);
+    console.warn("[S1] could not build the LoRA datalist", exc);
   }
 }
 
@@ -549,6 +558,7 @@ function loraPicker(path, names, selected) {
 function loraNameField(entryPath, value) {
   const path = `${entryPath}.name`;
   const wrap = el("div", "s1-field");
+  wrap.dataset.mark = path;
   wrap.append(el("span", "s1-label", "name"));
   const input = document.createElement("input");
   input.type = "text";
@@ -608,7 +618,7 @@ function renderLoras() {
     const path = `loras.${index}`;
     const title = entry.lora_id ? `LoRA ${index + 1} · ${entry.lora_id}` : `LoRA ${index + 1}`;
     const box = card(title, listButtons("loras", index, state.model.loras.length), [
-      readOnlyLine("lora_id", entry.lora_id || ""),
+      readOnlyLine("lora_id", entry.lora_id || "", `${path}.lora_id`),
       loraNameField(path, entry.name),
       field("strength (model & clip)", `${path}.strength`, showNumber(displayedStrength(entry)), { decimal: true }),
       field("tags", `${path}.tags`, (entry.tags || []).join(", "), { kind: "tags" }),
@@ -625,33 +635,7 @@ function renderLoras() {
   bodyEl.append(button("Add LoRA", "add", { list: "loras", factory: "lora" }));
 }
 
-function renderBinding(binding, path, listPath, index, length) {
-  return card(`Binding ${index + 1}`, listButtons(listPath, index, length), [
-    field("lora_id", `${path}.lora_id`, binding.lora_id, { mono: true }),
-    row(
-      field("strength_model", `${path}.strength_model`, showNumber(binding.strength_model), { decimal: true }),
-      field("strength_clip", `${path}.strength_clip`, showNumber(binding.strength_clip), { decimal: true }),
-    ),
-    hint("Blank strengths use the LoRA Library defaults."),
-  ]);
-}
-
-function renderOption(option, path, listPath, index, length) {
-  const title = option.option_id ? `Option ${index + 1} · ${option.option_id}` : `Option ${index + 1}`;
-  const bindingsPath = `${path}.lora_bindings`;
-  const children = [
-    readOnlyLine("option_id", option.option_id || "", `${path}.option_id`),
-    field("label", `${path}.label`, option.label ?? ""),
-    field("description", `${path}.description`, option.description ?? "", { rows: 3 }),
-  ];
-  (option.lora_bindings || []).forEach((binding, bindingIndex) => {
-    children.push(renderBinding(binding, `${bindingsPath}.${bindingIndex}`, bindingsPath, bindingIndex, option.lora_bindings.length));
-  });
-  children.push(button("Add binding", "add", { list: bindingsPath, factory: "binding" }));
-  return card(title, listButtons(listPath, index, length), children);
-}
-
-function noneField(themePath, theme) {
+function noneField(theme) {
   const ids = [];
   for (const option of theme.options || []) {
     if (option?.option_id && !ids.includes(option.option_id)) ids.push(option.option_id);
@@ -659,67 +643,88 @@ function noneField(themePath, theme) {
   const current = theme.none_option_id || "";
   const choices = [""].concat(ids);
   if (current && !choices.includes(current)) choices.push(current);
-  return field("none_option_id", `${themePath}.none_option_id`, current, { select: choices });
+  return field("none_option_id", "none_option_id", current, { select: choices });
 }
 
-function renderThemes() {
+function renderOption(option, index, length) {
+  const path = `options.${index}`;
+  const title = option.option_id ? `Option ${index + 1} · ${option.option_id}` : `Option ${index + 1}`;
+  return card(title, listButtons("options", index, length), [
+    readOnlyLine("option_id", option.option_id || "", `${path}.option_id`),
+    field("label", `${path}.label`, option.label ?? ""),
+    field("description", `${path}.description`, option.description ?? "", { rows: 3 }),
+    field("tags", `${path}.tags`, (option.tags || []).join(", "), { kind: "tags" }),
+    hint("Selected options contribute these tags. The none option contributes none."),
+  ]);
+}
+
+function renderThemeFields() {
+  const theme = state.model;
   bodyEl.append(
     hint(
-      "theme_id and option_id are assigned automatically (theme_1, option_1, and so on) and are read-only. Existing ids are kept. Sequence steps still cite theme_id by hand.",
+      "theme_id and option_id are assigned automatically (theme_1, option_1, and so on) and are read-only. Existing ids are kept, including manual ids.",
     ),
   );
-  bodyEl.append(hint("Bindings store lora_id only. single asks choice; multi asks one noul per option."));
-  state.model.themes.forEach((theme, index) => {
-    const path = `themes.${index}`;
-    const title = theme.theme_id ? `Theme ${index + 1} · ${theme.theme_id}` : `Theme ${index + 1}`;
-    const optionsPath = `${path}.options`;
-    const children = [
-      readOnlyLine("theme_id", theme.theme_id || "", `${path}.theme_id`),
-      field("title", `${path}.title`, theme.title ?? ""),
-      field("instructions", `${path}.instructions`, theme.instructions ?? "", { rows: 4 }),
-      field("select_mode", `${path}.select_mode`, theme.select_mode || "single", { select: SELECT_MODES }),
-      noneField(path, theme),
-      hint("none must match an option id in this theme, or stay unset. There is no fallback option."),
-    ];
-    (theme.options || []).forEach((option, optionIndex) => {
-      children.push(renderOption(option, `${optionsPath}.${optionIndex}`, optionsPath, optionIndex, theme.options.length));
-    });
-    children.push(button("Add option", "add", { list: optionsPath, factory: "option" }));
-    bodyEl.append(card(title, listButtons("themes", index, state.model.themes.length), children));
-  });
-  bodyEl.append(button("Add theme", "add", { list: "themes", factory: "theme" }));
-}
-
-function renderAction(action, path, listPath, index, length) {
-  const children = [field("type", `${path}.type`, action.type, { select: ACTION_TYPES, rerender: "type" })];
-  if (action.type === "rewrite_instructions") {
-    children.push(field("instructions", `${path}.instructions`, action.instructions || "", { rows: 4 }));
-  } else if (action.type === "set_select_mode") {
-    children.push(field("select_mode", `${path}.select_mode`, action.select_mode || "single", { select: SELECT_MODES }));
-  } else if (action.type === "rewrite_options") {
-    children.push(hint("JSON object: keep_option_ids, add_options, remove_option_ids, patch_bindings."));
-    children.push(field("rewrite_options", `${path}.rewrite_json`, action.rewrite_json || "{}", { rows: 8, code: true }));
-  }
-  return card(`Action ${index + 1} · ${action.type}`, listButtons(listPath, index, length), children);
-}
-
-function renderDependency(dependency, path, listPath, index, length) {
-  const when = dependency.when || { step_id: "", op: "includes_any", option_ids: [] };
-  const bare = when.op === "skipped" || when.op === "answered";
+  bodyEl.append(
+    hint(
+      "This form cannot see other Theme nodes. If a chain repeats theme_id, set a unique id in the JSON widget once; this form keeps it.",
+    ),
+  );
   const children = [
-    field("when.step_id", `${path}.when.step_id`, when.step_id || "", { mono: true }),
-    field("when.op", `${path}.when.op`, when.op || "includes_any", { select: WHEN_OPS, rerender: "op" }),
+    readOnlyLine("theme_id", theme.theme_id || "", "theme_id"),
+    field("title", "title", theme.title ?? ""),
+    field("instructions", "instructions", theme.instructions ?? "", { rows: 4 }),
+    field("select_mode", "select_mode", theme.select_mode || "single", { select: SELECT_MODES }),
+    noneField(theme),
+    hint("none must match an option id in this theme, or stay unset. There is no fallback option."),
   ];
-  if (OP_HINT[when.op]) children.push(hint(OP_HINT[when.op]));
-  if (!bare) {
-    children.push(field("when.option_ids", `${path}.when.option_ids`, (when.option_ids || []).join(", "), { kind: "ids", mono: true }));
-  }
-  const actionsPath = `${path}.actions`;
-  (dependency.actions || []).forEach((action, actionIndex) => {
-    children.push(renderAction(action, `${actionsPath}.${actionIndex}`, actionsPath, actionIndex, dependency.actions.length));
+  (theme.options || []).forEach((option, index) => {
+    children.push(renderOption(option, index, theme.options.length));
   });
-  children.push(button("Add action", "add", { list: actionsPath, factory: "action" }));
-  return card(`Dependency ${index + 1}`, listButtons(listPath, index, length), children);
+  children.push(button("Add option", "add", { list: "options", factory: "option" }));
+  const title = theme.theme_id ? `Theme · ${theme.theme_id}` : "Theme";
+  bodyEl.append(card(title, [], children));
+}
+
+function renderClause(clause, index, length) {
+  const path = `clauses.${index}`;
+  const bare = clause.op === "skipped" || clause.op === "answered";
+  const children = [
+    field("upstream theme_id", `${path}.theme_id`, clause.theme_id || "", { mono: true, scope: "enable" }),
+    field("op", `${path}.op`, clause.op || "includes_any", {
+      select: ENABLE_OPS,
+      rerender: "op",
+      scope: "enable",
+    }),
+  ];
+  if (OP_HINT[clause.op]) children.push(hint(OP_HINT[clause.op]));
+  if (!bare) {
+    children.push(
+      field("option_ids", `${path}.option_ids`, (clause.option_ids || []).join(", "), {
+        kind: "ids",
+        mono: true,
+        scope: "enable",
+      }),
+    );
+  }
+  return card(`Clause ${index + 1}`, listButtons("clauses", index, length, "enable"), children);
+}
+
+function renderEnableFields() {
+  const enable = state.enable;
+  const box = el("section", "s1-card");
+  box.append(el("h3", null, "Enable when upstream"));
+  box.append(
+    hint(
+      "Clauses name an upstream theme_id and its option ids. match any is OR. match all is AND. An empty list matches nothing.",
+    ),
+  );
+  box.append(field("match", "match", enable.match || "any", { select: ENABLE_MATCH, scope: "enable" }));
+  (enable.clauses || []).forEach((clause, index) => {
+    box.append(renderClause(clause, index, enable.clauses.length));
+  });
+  box.append(button("Add clause", "add", { list: "clauses", factory: "clause", scope: "enable" }));
+  bodyEl.append(box);
 }
 
 function promptField(name, label, value) {
@@ -737,56 +742,45 @@ function renderPrompts() {
   const box = el("section", "s1-card");
   box.append(el("h3", null, "Prompts"));
   box.append(
-    hint("Positive, then negative. A valid edit writes these widgets and sequence_json. They are not stored inside sequence_json."),
+    hint("Positive, then negative. A valid edit writes these widgets with theme_json. They are not stored inside theme_json."),
   );
   box.append(promptField("positive", "Positive prompt", state.positive));
   box.append(promptField("negative", "Negative prompt", state.negative));
-  if (state.node) {
-    const missing = ["positive", "negative"].filter((name) => !findWidget(state.node, name));
-    if (missing.length) {
-      box.append(hint(`Widget not found on this node: ${missing.join(", ")}. A prompt without a widget is skipped.`));
-    }
+  bodyEl.append(box);
+}
+
+function renderRun() {
+  const box = el("section", "s1-card");
+  box.append(el("h3", null, "Run"));
+  const wrap = el("label", "s1-field");
+  wrap.dataset.mark = "run";
+  wrap.append(el("span", "s1-label", "run"));
+  const select = document.createElement("select");
+  select.dataset.run = "1";
+  for (const choice of RUN_MODES) {
+    const option = document.createElement("option");
+    option.value = choice;
+    option.textContent = choice;
+    select.append(option);
   }
-  return box;
+  select.value = RUN_MODES.includes(state.run) ? state.run : "disabled";
+  wrap.append(select);
+  box.append(wrap);
+  box.append(hint(RUN_HINT[select.value] || RUN_HINT.disabled));
+  bodyEl.append(box);
 }
 
-function renderSteps() {
-  bodyEl.append(hint("Dependencies are OR. Actions in a match run in order. Nothing here calls SystemOne."));
-  state.model.steps.forEach((step, index) => {
-    const path = `steps.${index}`;
-    const title = step.step_id ? `Step ${index + 1} · ${step.step_id}` : `Step ${index + 1}`;
-    const depsPath = `${path}.dependencies`;
-    const children = [
-      field("step_id", `${path}.step_id`, step.step_id, { mono: true }),
-      field("theme_id", `${path}.theme_id`, step.theme_id, { mono: true }),
-      field("enabled_by_default", `${path}.enabled_by_default`, step.enabled_by_default !== false, { check: true }),
-    ];
-    (step.dependencies || []).forEach((dependency, depIndex) => {
-      children.push(renderDependency(dependency, `${depsPath}.${depIndex}`, depsPath, depIndex, step.dependencies.length));
-    });
-    children.push(button("Add dependency", "add", { list: depsPath, factory: "dependency" }));
-    bodyEl.append(card(title, listButtons("steps", index, state.model.steps.length), children));
-  });
-  bodyEl.append(button("Add step", "add", { list: "steps", factory: "step" }));
-}
-
-function renderRaw() {
+function renderRaw(which, text, blurb) {
   const area = document.createElement("textarea");
   area.className = "s1-raw";
-  area.dataset.raw = "1";
+  area.dataset.raw = which;
   area.spellcheck = false;
-  area.value = state.raw;
-  bodyEl.append(
-    hint("This JSON did not fit the form. Fix it here, then choose Try form. A successful parse writes the node. Invalid JSON stays here and is not written."),
-    area,
-    button("Try form", "try-form"),
-  );
+  area.value = text ?? "";
+  bodyEl.append(hint(blurb), area, button("Try form", "try-form"));
 }
 
 function renderEmpty() {
-  bodyEl.append(
-    hint("Click Open visual editor on a LoRA Library, Theme Library, or Theme Sequence node. This tab edits that node's JSON widget."),
-  );
+  bodyEl.append(hint("Open visual editor on a LoRA Library or Theme node. This modal edits that node's JSON widgets."));
 }
 
 function renderBody() {
@@ -797,15 +791,30 @@ function renderBody() {
     applyInvalidMarks();
     return;
   }
-  if (state.kind === "sequence") bodyEl.append(renderPrompts());
+  if (state.kind === "theme") {
+    renderPrompts();
+    renderRun();
+  }
   if (!state.model) {
-    renderRaw();
+    renderRaw(
+      "theme",
+      state.raw,
+      "This JSON did not fit the form. Fix it here, then choose Try form. A successful parse writes the node. Invalid JSON stays here and is not written.",
+    );
     applyInvalidMarks();
     return;
   }
   if (state.kind === "lora") renderLoras();
-  else if (state.kind === "theme") renderThemes();
-  else renderSteps();
+  else {
+    renderThemeFields();
+    if (!state.enable) {
+      renderRaw(
+        "enable",
+        state.enableRaw,
+        "enable_json did not fit the form. Invalid enable JSON is not written, and theme_json is left unchanged too.",
+      );
+    } else renderEnableFields();
+  }
   applyInvalidMarks();
 }
 
@@ -835,20 +844,6 @@ function nodeLive(node) {
   return Boolean(node);
 }
 
-function writePromptWidgets(node) {
-  const missing = [];
-  for (const name of ["positive", "negative"]) {
-    const widget = findWidget(node, name);
-    if (!widget) {
-      missing.push(name);
-      continue;
-    }
-    const text = state[name] ?? "";
-    if (widgetText(widget) !== text) writeWidget(node, widget, text);
-  }
-  return missing;
-}
-
 function writeWidget(node, widget, text) {
   widget.value = text;
   const widgets = node.widgets || [];
@@ -860,7 +855,7 @@ function writeWidget(node, widget, text) {
     try {
       widget.callback.call(widget, text);
     } catch (exc) {
-      console.warn("[S1 Editors] widget callback failed", exc);
+      console.warn("[S1] widget callback failed", exc);
     }
   }
   node.setDirtyCanvas?.(true, true);
@@ -871,6 +866,13 @@ function writeWidget(node, widget, text) {
   app.canvas?.setDirty?.(true, true);
 }
 
+function writeNamed(node, name, text) {
+  const widget = findWidget(node, name);
+  if (!widget) return false;
+  if (widgetText(widget) !== text) writeWidget(node, widget, text);
+  return true;
+}
+
 function loadNode(node) {
   flushLiveWrite();
   const spec = specFor(node);
@@ -878,20 +880,24 @@ function loadNode(node) {
   state.kind = spec?.kind || null;
   state.widgetName = spec?.widget || null;
   state.model = null;
+  state.enable = null;
   state.raw = "";
+  state.enableRaw = "";
   state.openLoraBrowse = "";
   state.positive = "";
   state.negative = "";
+  state.run = "disabled";
   state.clean = false;
   state.invalidPaths = [];
-  if (spec?.kind === "sequence") {
-    state.positive = widgetText(findWidget(node, "positive"));
-    state.negative = widgetText(findWidget(node, "negative"));
-  }
   if (!spec) {
-    setMessage("This node has no S1 editor.", "error");
+    setMessage("This node has no visual editor.", "error");
     renderAll();
     return;
+  }
+  if (spec.prompts) {
+    state.positive = widgetText(findWidget(node, "positive"));
+    state.negative = widgetText(findWidget(node, "negative"));
+    state.run = widgetText(findWidget(node, spec.runWidget)) || "disabled";
   }
   const widget = findWidget(node, spec.widget);
   if (!widget) {
@@ -909,20 +915,32 @@ function loadNode(node) {
     return;
   }
   state.model = parsed.model;
+  if (spec.kind === "theme") {
+    const enableWidget = findWidget(node, spec.enableWidget);
+    state.enableRaw = enableWidget ? widgetText(enableWidget) : "";
+    const enableParsed = parseEditorDocument("enable", state.enableRaw);
+    if (!enableParsed.ok) {
+      state.enable = null;
+      state.clean = false;
+      state.invalidPaths = ["__enable_raw__"].concat(fieldPathsFromError(enableParsed.error));
+      setMessage(enableParsed.error, "error");
+      renderAll();
+      return;
+    }
+    state.enable = enableParsed.model;
+  }
   state.clean = true;
   state.invalidPaths = [];
   setMessage("", "");
   renderAll();
 }
 
-function idSignature(model) {
+function idSignature() {
+  const model = state.model;
   if (!model) return "";
   const loras = (model.loras || []).map((entry) => entry?.lora_id || "");
-  const themes = (model.themes || []).map((theme) => {
-    const options = (theme?.options || []).map((option) => option?.option_id || "");
-    return `${theme?.theme_id || ""}:${options.join(",")}`;
-  });
-  return JSON.stringify({ loras, themes });
+  const options = (model.options || []).map((option) => option?.option_id || "");
+  return JSON.stringify({ loras, theme: model.theme_id || "", options });
 }
 
 function applyInvalidMarks() {
@@ -934,7 +952,8 @@ function applyInvalidMarks() {
     wrap.classList.toggle("s1-invalid", Boolean(path) && marks.has(path));
   });
   rootEl.querySelectorAll("textarea.s1-raw").forEach((area) => {
-    area.classList.toggle("s1-invalid", marks.has("__raw__"));
+    const which = area.dataset.raw === "enable" ? "__enable_raw__" : "__raw__";
+    area.classList.toggle("s1-invalid", marks.has(which));
   });
 }
 
@@ -959,6 +978,13 @@ function flushLiveWrite() {
   liveWrite();
 }
 
+function rejectDraft(error, marks) {
+  state.clean = false;
+  state.invalidPaths = marks;
+  setMessage(error, "error");
+  applyInvalidMarks();
+}
+
 function liveWrite() {
   if (!state.node || !state.kind) return;
   if (!nodeLive(state.node)) {
@@ -977,50 +1003,71 @@ function liveWrite() {
   if (!state.model) {
     const parsed = parseEditorDocument(state.kind, state.raw);
     if (!parsed.ok) {
-      state.clean = false;
-      state.invalidPaths = ["__raw__"].concat(fieldPathsFromError(parsed.error));
-      setMessage(parsed.error, "error");
-      applyInvalidMarks();
+      rejectDraft(parsed.error, ["__raw__"].concat(fieldPathsFromError(parsed.error)));
       return;
     }
     state.model = parsed.model;
   }
-  const beforeIds = idSignature(state.model);
+  if (state.kind === "theme" && !state.enable) {
+    const parsed = parseEditorDocument("enable", state.enableRaw);
+    if (!parsed.ok) {
+      rejectDraft(parsed.error, ["__enable_raw__"].concat(fieldPathsFromError(parsed.error)));
+      return;
+    }
+    state.enable = parsed.model;
+  }
+  const beforeIds = idSignature();
   const result = commitModel(state.kind, state.model);
   if (!result.ok) {
     state.clean = false;
     state.invalidPaths = fieldPathsFromError(result.error);
     setMessage(result.error, "error");
-    if (idSignature(state.model) !== beforeIds) {
+    if (idSignature() !== beforeIds) {
       renderAll();
       return;
     }
     applyInvalidMarks();
     return;
   }
+  let enableResult = null;
+  if (state.kind === "theme") {
+    enableResult = commitModel("enable", state.enable);
+    if (!enableResult.ok) {
+      state.clean = false;
+      state.invalidPaths = fieldPathsFromError(enableResult.error);
+      setMessage(enableResult.error, "error");
+      applyInvalidMarks();
+      return;
+    }
+  }
   state.invalidPaths = [];
   state.writing = true;
   try {
     if (widgetText(widget) !== result.json) writeWidget(state.node, widget, result.json);
-    if (state.kind === "sequence") writePromptWidgets(state.node);
+    if (state.kind === "theme") {
+      const spec = specFor(state.node);
+      writeNamed(state.node, spec.enableWidget, enableResult.json);
+      writeNamed(state.node, "positive", state.positive ?? "");
+      writeNamed(state.node, "negative", state.negative ?? "");
+      writeNamed(state.node, spec.runWidget, state.run || "disabled");
+    }
   } finally {
     state.writing = false;
   }
   state.raw = result.json;
+  if (enableResult) state.enableRaw = enableResult.json;
   state.clean = true;
-  const idsChanged = idSignature(result.model) !== beforeIds;
+  const idsChanged = idSignature() !== beforeIds;
+  state.model = result.model;
+  if (enableResult) state.enable = enableResult.model;
   setMessage("", "");
   if (!hadModel || idsChanged) {
-    state.model = result.model;
     renderAll();
     return;
   }
   applyInvalidMarks();
 }
 
-// ComfyUI does not expose a cheap widget-change hook. While the editor is
-// visible and the draft matches the last valid write, poll the widgets and
-// reload if something else changed them. An invalid draft is left alone.
 function pollWidgets() {
   if (state.writing || state.writeTimer || !state.clean) return;
   if (!editorVisible()) return;
@@ -1028,13 +1075,16 @@ function pollWidgets() {
   const widget = findWidget(state.node, state.widgetName);
   if (!widget) return;
   const text = widgetText(widget);
-  let promptsDiffer = false;
-  if (state.kind === "sequence") {
+  let extra = false;
+  if (state.kind === "theme") {
+    const spec = specFor(state.node);
+    const enableText = widgetText(findWidget(state.node, spec.enableWidget));
     const positive = widgetText(findWidget(state.node, "positive"));
     const negative = widgetText(findWidget(state.node, "negative"));
-    promptsDiffer = positive !== state.positive || negative !== state.negative;
+    const run = widgetText(findWidget(state.node, spec.runWidget));
+    extra = enableText !== state.enableRaw || positive !== state.positive || negative !== state.negative || run !== state.run;
   }
-  if (text !== state.raw || promptsDiffer) loadNode(state.node);
+  if (text !== state.raw || extra) loadNode(state.node);
 }
 
 function ensurePoll() {
@@ -1063,7 +1113,9 @@ function onClick(event) {
     scheduleLiveWrite();
     return;
   }
-  if (!state.model) return;
+  const scope = target.dataset.scope === "enable" ? "enable" : "model";
+  const root = scopedModel(scope);
+  if (!root) return;
   if (act === "browse-loras") {
     syncFromDom();
     const path = target.dataset.browse || "";
@@ -1073,12 +1125,12 @@ function onClick(event) {
   }
   if (act === "add") {
     syncFromDom();
-    const list = getByPath(state.model, target.dataset.list);
+    const list = getByPath(root, target.dataset.list);
     const factory = FACTORIES[target.dataset.factory];
     if (Array.isArray(list) && factory) {
       list.push(factory());
       if (state.kind === "lora") assignLoraIds(state.model);
-      if (state.kind === "theme") assignThemeIds(state.model);
+      if (state.kind === "theme" && scope === "model") assignThemeDocument(state.model);
     }
     renderBody();
     scheduleLiveWrite();
@@ -1086,14 +1138,14 @@ function onClick(event) {
   }
   if (act === "remove" || act === "up" || act === "down") {
     syncFromDom();
-    const list = getByPath(state.model, target.dataset.list);
+    const list = getByPath(root, target.dataset.list);
     const index = Number(target.dataset.index);
     if (!Array.isArray(list) || !Number.isInteger(index)) return;
     if (act === "remove") list.splice(index, 1);
     if (act === "up" && index > 0) list.splice(index - 1, 0, list.splice(index, 1)[0]);
     if (act === "down" && index < list.length - 1) list.splice(index + 1, 0, list.splice(index, 1)[0]);
     if (state.kind === "lora") assignLoraIds(state.model);
-    if (state.kind === "theme") assignThemeIds(state.model);
+    if (state.kind === "theme" && scope === "model") assignThemeDocument(state.model);
     renderBody();
     scheduleLiveWrite();
   }
@@ -1107,7 +1159,10 @@ function onInput(event) {
     return;
   }
   if (input.dataset.raw != null) {
-    state.raw = input.value;
+    if (input.dataset.raw === "enable") state.enableRaw = input.value;
+    else state.raw = input.value;
+    if (input.dataset.raw === "theme") state.model = null;
+    if (input.dataset.raw === "enable") state.enable = null;
     scheduleLiveWrite();
     return;
   }
@@ -1116,10 +1171,16 @@ function onInput(event) {
     scheduleLiveWrite();
     return;
   }
-  if (!state.model || !input.dataset.path || input.readOnly) return;
-  if (input.dataset.kind === "tags" || input.dataset.kind === "ids") setPath(state.model, input.dataset.path, splitList(input.value));
-  else if (input.type === "checkbox") setPath(state.model, input.dataset.path, input.checked);
-  else setPath(state.model, input.dataset.path, input.value);
+  if (input.dataset.run != null) {
+    state.run = input.value;
+    scheduleLiveWrite();
+    return;
+  }
+  const root = input.dataset.scope === "enable" ? state.enable : state.model;
+  if (!root || !input.dataset.path || input.readOnly) return;
+  if (input.dataset.kind === "tags" || input.dataset.kind === "ids") setPath(root, input.dataset.path, splitList(input.value));
+  else if (input.type === "checkbox") setPath(root, input.dataset.path, input.checked);
+  else setPath(root, input.dataset.path, input.value);
   scheduleLiveWrite();
 }
 
@@ -1131,7 +1192,11 @@ function onChange(event) {
     return;
   }
   if (input.dataset.raw != null) {
-    state.raw = input.value;
+    if (input.dataset.raw === "enable") state.enableRaw = input.value;
+    else {
+      state.raw = input.value;
+      state.model = null;
+    }
     scheduleLiveWrite();
     return;
   }
@@ -1140,18 +1205,18 @@ function onChange(event) {
     scheduleLiveWrite();
     return;
   }
-  if (!state.model || !input.dataset.path || input.readOnly) return;
-  syncFromDom();
-  if (input.dataset.rerender === "type") {
-    const parts = input.dataset.path.split(".");
-    parts.pop();
-    const index = Number(parts.pop());
-    const list = getByPath(state.model, parts.join("."));
-    if (Array.isArray(list) && list[index]) list[index] = blankAction(list[index].type);
+  if (input.dataset.run != null) {
+    state.run = input.value;
+    renderBody();
+    scheduleLiveWrite();
+    return;
   }
+  const root = input.dataset.scope === "enable" ? state.enable : state.model;
+  if (!root || !input.dataset.path || input.readOnly) return;
+  syncFromDom();
   if (input.dataset.rerender === "op") {
-    const when = getByPath(state.model, input.dataset.path.replace(/\.op$/, ""));
-    if (when && (when.op === "skipped" || when.op === "answered")) when.option_ids = [];
+    const clause = getByPath(state.enable, input.dataset.path.replace(/\.op$/, ""));
+    if (clause && (clause.op === "skipped" || clause.op === "answered")) clause.option_ids = [];
   }
   if (input.dataset.rerender) renderBody();
   scheduleLiveWrite();
@@ -1199,7 +1264,7 @@ function openModal() {
     close.type = "button";
     close.textContent = "Close";
     close.addEventListener("click", () => closeModal());
-    bar.append(el("strong", null, "S1 Editors"), close);
+    bar.append(el("strong", null, "Visual editor"), close);
     const host = el("div", "s1-editor-modal-host");
     panel.append(bar, host);
     modalEl.append(panel);
@@ -1211,55 +1276,8 @@ function openModal() {
   if (!modalEl.isConnected) document.body.appendChild(modalEl);
 }
 
-async function focusSidebar() {
-  const command = app.extensionManager?.command;
-  if (!command || typeof command.execute !== "function") return false;
-  const list = Array.isArray(command.commands) ? command.commands : [];
-  const match = list.find((item) => typeof item?.id === "string" && item.id.endsWith(TAB_ID) && /sidebar/i.test(item.id));
-  if (!match) return false;
-  let active = false;
-  try {
-    active = typeof match.active === "function" ? !!match.active() : false;
-  } catch {
-    active = false;
-  }
-  if (!active) {
-    try {
-      await command.execute(match.id);
-    } catch (exc) {
-      console.warn("[S1 Editors] could not focus the sidebar tab", exc);
-      return false;
-    }
-  }
-  return true;
-}
-
-function clickSidebarButton() {
-  const nodes = document.querySelectorAll("button, [role='tab'], [role='button']");
-  for (const node of nodes) {
-    const blob = [node.getAttribute("aria-label"), node.getAttribute("title"), node.getAttribute("data-id"), node.id, node.textContent].join(" ");
-    if (blob.includes("S1 Editors") || blob.includes(TAB_ID)) {
-      node.click();
-      return true;
-    }
-  }
-  return false;
-}
-
 function editorVisible() {
   return Boolean(rootEl?.isConnected && rootEl.getClientRects().length > 0);
-}
-
-async function openSurface() {
-  if (!sidebarReady) {
-    openModal();
-    return;
-  }
-  if (editorVisible()) return;
-  if (!(await focusSidebar())) clickSidebarButton();
-  window.setTimeout(() => {
-    if (!editorVisible()) openModal();
-  }, 120);
 }
 
 function selectNode(node) {
@@ -1272,12 +1290,11 @@ function selectNode(node) {
   canvas?.setDirty?.(true, true);
 }
 
-async function openEditorForNode(node) {
+function openEditorForNode(node) {
   ensureShell();
   selectNode(node);
-  // The button always loads the widget, so the form matches the node.
   loadNode(node);
-  await openSurface();
+  openModal();
 }
 
 function fitNode(node) {
@@ -1288,7 +1305,7 @@ function fitNode(node) {
     const height = Math.max(node.size?.[1] || 0, computed?.[1] || 0);
     if (width && height) node.setSize([width, height]);
   } catch (exc) {
-    console.warn("[S1 Editors] could not resize the node for the editor button", exc);
+    console.warn("[S1] could not resize the node for the editor button", exc);
   }
 }
 
@@ -1299,10 +1316,10 @@ function attachButton(node) {
   let widget = null;
   try {
     widget = node.addWidget("button", BUTTON_NAME, BUTTON_LABEL, () => {
-      void openEditorForNode(node);
+      openEditorForNode(node);
     }, { serialize: false });
   } catch (exc) {
-    console.warn("[S1 Editors] could not add the Open visual editor button", exc);
+    console.warn("[S1] could not add the Open visual editor button", exc);
     return;
   }
   const created = widget || node.widgets?.[node.widgets.length - 1];
@@ -1317,33 +1334,12 @@ app.registerExtension({
   name: "SystemOne.LoraRouter.UI",
   async setup() {
     ensureShell();
-    const register = app.extensionManager?.registerSidebarTab;
-    if (typeof register !== "function" || tabRegistered) return;
-    tabRegistered = true;
-    try {
-      register.call(app.extensionManager, {
-        id: TAB_ID,
-        icon: "pi pi-list",
-        title: "S1 Editors",
-        tooltip: "S1 Editors",
-        type: "custom",
-        render(container) {
-          ensureShell();
-          if (rootEl.parentElement !== container) container.appendChild(rootEl);
-          closeModal();
-        },
-      });
-      sidebarReady = true;
-    } catch (exc) {
-      sidebarReady = false;
-      console.warn("[S1 Editors] sidebar tab was not registered", exc);
-    }
   },
   nodeCreated(node) {
     attachButton(node);
   },
   getNodeMenuItems(node) {
     if (!specFor(node)) return;
-    return [{ content: "Open visual editor", callback: () => { void openEditorForNode(node); } }];
+    return [{ content: "Open visual editor", callback: () => { openEditorForNode(node); } }];
   },
 });

@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "theme_id": "art_style",
+  "title": "畫風",
+  "instructions": "判斷提示詞的主要畫風。",
+  "select_mode": "single",
+  "none_option_id": "none",
+  "options": [
+    {
+      "option_id": "anime",
+      "label": "動漫",
+      "description": "二次元、賽璐璐、動漫角色",
+      "tags": ["style_anime"]
+    },
+    {
+      "option_id": "realistic",
+      "label": "寫實",
+      "description": "真實光影、照片感、寫實皮膚",
+      "tags": ["style_realistic"]
+    },
+    {
+      "option_id": "none",
+      "label": "無",
+      "description": "不套用畫風",
+      "tags": ["should_not_apply"]
+    }
+  ]
+}

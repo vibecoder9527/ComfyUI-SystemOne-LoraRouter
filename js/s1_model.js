@@ -1,18 +1,12 @@
-// Editor model for the three SystemOne JSON documents.
+// Editor model for a LoRA library, one theme, and enable rules.
 // Field rules match schema/types.py. This file does not import ComfyUI.
 
 export const SELECT_MODES = ["single", "multi"];
-export const WHEN_OPS = ["eq", "neq", "includes_any", "includes_all", "skipped", "answered"];
-export const ACTION_TYPES = [
-  "enable_step",
-  "disable_step",
-  "rewrite_options",
-  "rewrite_instructions",
-  "set_select_mode",
-];
+export const RUN_MODES = ["disabled", "enabled", "when_upstream"];
+export const ENABLE_MATCH = ["any", "all"];
+export const ENABLE_OPS = ["eq", "neq", "includes_any", "includes_all", "skipped", "answered"];
 
 const BARE_OPS = new Set(["skipped", "answered"]);
-const REWRITE_KEYS = ["keep_option_ids", "add_options", "remove_option_ids", "patch_bindings"];
 
 export class EditorModelError extends Error {
   constructor(message) {
@@ -102,11 +96,6 @@ function numberFromEditor(value, path, required) {
   fail(`${path} must be a finite number`);
 }
 
-function optionalFloat(data, key, path) {
-  if (!Object.prototype.hasOwnProperty.call(data, key) || data[key] === null) return null;
-  return finiteNumber(data[key], `${path}.${key}`);
-}
-
 function requireBool(value, path) {
   if (typeof value !== "boolean") fail(`${path} must be a boolean`);
   return value;
@@ -124,31 +113,18 @@ function stringList(value, path, { ids = false } = {}) {
   return value.slice();
 }
 
-function checkBinding(data, path) {
-  if (!isObject(data)) fail(`${path} must be an object`);
-  rejectUnknown(data, ["lora_id", "strength_model", "strength_clip"], path);
-  const out = { lora_id: requireId(data.lora_id, `${path}.lora_id`) };
-  const strengthModel = optionalFloat(data, "strength_model", path);
-  const strengthClip = optionalFloat(data, "strength_clip", path);
-  if (strengthModel !== null) out.strength_model = strengthModel;
-  if (strengthClip !== null) out.strength_clip = strengthClip;
-  return out;
+function optionalId(data, key, path) {
+  if (!Object.prototype.hasOwnProperty.call(data, key) || data[key] === null) return null;
+  return requireId(data[key], `${path}.${key}`);
 }
 
-function checkOption(data, path, seen) {
-  if (!isObject(data)) fail(`${path} must be an object`);
-  rejectUnknown(data, ["option_id", "label", "description", "lora_bindings"], path);
-  const optionId = requireId(data.option_id, `${path}.option_id`);
-  if (seen.has(optionId)) fail(`${path}: duplicate option_id ${optionId}`);
-  seen.add(optionId);
-  const rawBindings = data.lora_bindings === undefined ? [] : data.lora_bindings;
-  if (!Array.isArray(rawBindings)) fail(`${path}.lora_bindings must be a list`);
-  return {
-    option_id: optionId,
-    label: requireText(data.label, `${path}.label`, true),
-    description: requireText(data.description, `${path}.description`, true),
-    lora_bindings: rawBindings.map((item, index) => checkBinding(item, `${path}.lora_bindings[${index}]`)),
-  };
+function rejectRemoved(data, path) {
+  if (Object.prototype.hasOwnProperty.call(data, "lora_bindings")) {
+    fail(`${path}: lora_bindings was removed; selected options contribute tags`);
+  }
+  if (Object.prototype.hasOwnProperty.call(data, "fallback_option_id")) {
+    fail(`${path}: fallback_option_id was removed and is not applied`);
+  }
 }
 
 function checkLoraEntry(data, path) {
@@ -174,43 +150,64 @@ function checkLoraEntry(data, path) {
   };
 }
 
-function checkTheme(data, path) {
+function checkOption(data, path, seen) {
   if (!isObject(data)) fail(`${path} must be an object`);
+  rejectRemoved(data, path);
+  rejectUnknown(data, ["option_id", "label", "description", "tags"], path);
+  const optionId = requireId(data.option_id, `${path}.option_id`);
+  if (seen.has(optionId)) fail(`${path}: duplicate option_id ${optionId}`);
+  seen.add(optionId);
+  const tags = Object.prototype.hasOwnProperty.call(data, "tags") ? stringList(data.tags, `${path}.tags`) : [];
+  return {
+    option_id: optionId,
+    label: requireText(data.label, `${path}.label`, true),
+    description: requireText(data.description, `${path}.description`, true),
+    tags,
+  };
+}
+
+function checkTheme(data) {
+  if (!isObject(data)) fail("theme must be an object");
+  rejectRemoved(data, "theme");
+  if (Object.prototype.hasOwnProperty.call(data, "themes")) {
+    fail("theme: a theme node stores one theme; a library of themes is not accepted");
+  }
   rejectUnknown(
     data,
-    ["theme_id", "title", "instructions", "select_mode", "options", "none_option_id"],
-    path,
+    ["version", "theme_id", "title", "instructions", "select_mode", "options", "none_option_id"],
+    "theme",
   );
-  if (!Array.isArray(data.options)) fail(`${path}.options must be a list`);
+  readVersion(data, "theme");
+  if (!Array.isArray(data.options)) fail("theme: options must be a list");
   const seen = new Set();
-  const options = data.options.map((item, index) => checkOption(item, `${path}.options[${index}]`, seen));
+  const options = data.options.map((item, index) => checkOption(item, `options[${index}]`, seen));
   const known = new Set(options.map((option) => option.option_id));
-  const noneId = optionalId(data, "none_option_id", path);
+  const noneId = optionalId(data, "none_option_id", "theme");
   if (noneId !== null && !known.has(noneId)) {
-    fail(`${path}: none_option_id ${noneId} is not an option of this theme`);
+    fail(`theme: none_option_id ${noneId} is not an option of this theme`);
   }
   return {
-    theme_id: requireId(data.theme_id, `${path}.theme_id`),
-    title: requireText(data.title, `${path}.title`),
-    instructions: requireText(data.instructions, `${path}.instructions`),
-    select_mode: requireChoice(data.select_mode, SELECT_MODES, `${path}.select_mode`),
+    version: 1,
+    theme_id: requireId(data.theme_id, "theme.theme_id"),
+    title: requireText(data.title, "theme.title"),
+    instructions: requireText(data.instructions, "theme.instructions"),
+    select_mode: requireChoice(data.select_mode, SELECT_MODES, "theme.select_mode"),
     options,
     none_option_id: noneId,
   };
 }
 
-function optionalId(data, key, path) {
-  if (!Object.prototype.hasOwnProperty.call(data, key) || data[key] === null) return null;
-  return requireId(data[key], `${path}.${key}`);
-}
-
-function checkWhen(data, path) {
+function checkClause(data, path) {
   if (!isObject(data)) fail(`${path} must be an object`);
-  rejectUnknown(data, ["step_id", "op", "option_ids"], path);
-  const op = requireChoice(data.op, WHEN_OPS, `${path}.op`);
+  rejectUnknown(data, ["theme_id", "op", "option_ids"], path);
+  const op = requireChoice(data.op, ENABLE_OPS, `${path}.op`);
   let optionIds = [];
   if (BARE_OPS.has(op)) {
-    if (Object.prototype.hasOwnProperty.call(data, "option_ids") && data.option_ids != null && !(Array.isArray(data.option_ids) && data.option_ids.length === 0)) {
+    if (
+      Object.prototype.hasOwnProperty.call(data, "option_ids") &&
+      data.option_ids != null &&
+      !(Array.isArray(data.option_ids) && data.option_ids.length === 0)
+    ) {
       fail(`${path}: op ${op} does not take option_ids`);
     }
   } else {
@@ -223,79 +220,22 @@ function checkWhen(data, path) {
       fail(`${path}: op ${op} requires at least one option_id`);
     }
   }
-  return { step_id: requireId(data.step_id, `${path}.step_id`), op, option_ids: optionIds };
+  return { theme_id: requireId(data.theme_id, `${path}.theme_id`), op, option_ids: optionIds };
 }
 
-function checkAction(data, path) {
-  if (!isObject(data)) fail(`${path} must be an object`);
-  if (typeof data.type !== "string" || !ACTION_TYPES.includes(data.type)) {
-    fail(`${path}.type must be one of: ${ACTION_TYPES.join(", ")}`);
-  }
-  if (data.type === "enable_step" || data.type === "disable_step") {
-    rejectUnknown(data, ["type"], path);
-    return { type: data.type };
-  }
-  if (data.type === "rewrite_instructions") {
-    rejectUnknown(data, ["type", "instructions"], path);
-    return { type: data.type, instructions: requireText(data.instructions, `${path}.instructions`) };
-  }
-  if (data.type === "set_select_mode") {
-    rejectUnknown(data, ["type", "select_mode"], path);
-    return { type: data.type, select_mode: requireChoice(data.select_mode, SELECT_MODES, `${path}.select_mode`) };
-  }
-  rejectUnknown(data, ["type", ...REWRITE_KEYS], path);
-  const out = { type: "rewrite_options" };
-  if (Object.prototype.hasOwnProperty.call(data, "keep_option_ids")) {
-    out.keep_option_ids = stringList(data.keep_option_ids, `${path}.keep_option_ids`, { ids: true });
-  }
-  if (Object.prototype.hasOwnProperty.call(data, "remove_option_ids")) {
-    out.remove_option_ids = stringList(data.remove_option_ids, `${path}.remove_option_ids`, { ids: true });
-  }
-  if (Object.prototype.hasOwnProperty.call(data, "add_options")) {
-    if (!Array.isArray(data.add_options)) fail(`${path}.add_options must be a list`);
-    const seen = new Set();
-    out.add_options = data.add_options.map((item, index) => checkOption(item, `${path}.add_options[${index}]`, seen));
-  }
-  if (Object.prototype.hasOwnProperty.call(data, "patch_bindings")) {
-    if (!isObject(data.patch_bindings)) fail(`${path}.patch_bindings must be an object`);
-    const patch = {};
-    for (const [optionId, rawBindings] of Object.entries(data.patch_bindings)) {
-      if (typeof optionId !== "string" || optionId === "" || /\s/.test(optionId)) {
-        fail(`${path}.patch_bindings keys must be option ids without whitespace`);
-      }
-      if (!Array.isArray(rawBindings)) fail(`${path}.patch_bindings[${optionId}] must be a list of bindings`);
-      patch[optionId] = rawBindings.map((item, index) => checkBinding(item, `${path}.patch_bindings.${optionId}[${index}]`));
-    }
-    out.patch_bindings = patch;
-  }
-  return out;
-}
-
-function checkDependency(data, path) {
-  if (!isObject(data)) fail(`${path} must be an object`);
-  rejectUnknown(data, ["when", "actions"], path);
-  if (!Object.prototype.hasOwnProperty.call(data, "when")) fail(`${path}: missing when`);
-  if (!Object.prototype.hasOwnProperty.call(data, "actions")) fail(`${path}: missing actions`);
-  if (!Array.isArray(data.actions)) fail(`${path}.actions must be a list`);
+function checkEnable(data) {
+  if (!isObject(data)) fail("enable must be an object");
+  rejectUnknown(data, ["version", "match", "clauses"], "enable");
+  readVersion(data, "enable");
+  const match = Object.prototype.hasOwnProperty.call(data, "match")
+    ? requireChoice(data.match, ENABLE_MATCH, "enable.match")
+    : "any";
+  const raw = data.clauses === undefined ? [] : data.clauses;
+  if (!Array.isArray(raw)) fail("enable: clauses must be a list");
   return {
-    when: checkWhen(data.when, `${path}.when`),
-    actions: data.actions.map((item, index) => checkAction(item, `${path}.actions[${index}]`)),
-  };
-}
-
-function checkStep(data, path) {
-  if (!isObject(data)) fail(`${path} must be an object`);
-  rejectUnknown(data, ["step_id", "theme_id", "enabled_by_default", "dependencies"], path);
-  const rawDeps = data.dependencies === undefined ? [] : data.dependencies;
-  if (!Array.isArray(rawDeps)) fail(`${path}.dependencies must be a list`);
-  const enabled = Object.prototype.hasOwnProperty.call(data, "enabled_by_default")
-    ? requireBool(data.enabled_by_default, `${path}.enabled_by_default`)
-    : true;
-  return {
-    step_id: requireId(data.step_id, `${path}.step_id`),
-    theme_id: requireId(data.theme_id, `${path}.theme_id`),
-    enabled_by_default: enabled,
-    dependencies: rawDeps.map((item, index) => checkDependency(item, `${path}.dependencies[${index}]`)),
+    version: 1,
+    match,
+    clauses: raw.map((item, index) => checkClause(item, `clauses[${index}]`)),
   };
 }
 
@@ -314,116 +254,6 @@ function checkLoraLibrary(data) {
   return { version: 1, loras };
 }
 
-function checkThemeLibrary(data) {
-  if (!isObject(data)) fail("theme library must be an object");
-  rejectUnknown(data, ["version", "themes"], "theme library");
-  readVersion(data, "theme library");
-  if (!Array.isArray(data.themes)) fail("theme library: themes must be a list");
-  const seen = new Set();
-  const themes = data.themes.map((item, index) => {
-    const theme = checkTheme(item, `themes[${index}]`);
-    if (seen.has(theme.theme_id)) fail(`themes[${index}]: duplicate theme_id ${theme.theme_id}`);
-    seen.add(theme.theme_id);
-    return theme;
-  });
-  return { version: 1, themes };
-}
-
-function checkSequence(data) {
-  if (!isObject(data)) fail("sequence must be an object");
-  rejectUnknown(data, ["version", "steps"], "sequence");
-  readVersion(data, "sequence");
-  if (!Array.isArray(data.steps)) fail("sequence: steps must be a list");
-  const seen = new Set();
-  const steps = data.steps.map((item, index) => {
-    const step = checkStep(item, `steps[${index}]`);
-    if (seen.has(step.step_id)) fail(`steps[${index}]: duplicate step_id ${step.step_id}`);
-    seen.add(step.step_id);
-    return step;
-  });
-  return { version: 1, steps };
-}
-
-function actionToEditor(action) {
-  if (action.type === "rewrite_options") {
-    const extra = {};
-    for (const key of REWRITE_KEYS) {
-      if (Object.prototype.hasOwnProperty.call(action, key)) extra[key] = action[key];
-    }
-    return { type: action.type, rewrite_json: JSON.stringify(extra, null, 2) };
-  }
-  if (action.type === "rewrite_instructions") return { type: action.type, instructions: action.instructions };
-  if (action.type === "set_select_mode") return { type: action.type, select_mode: action.select_mode };
-  return { type: action.type };
-}
-
-function dependencyToEditor(dependency) {
-  return {
-    when: {
-      step_id: dependency.when.step_id,
-      op: dependency.when.op,
-      option_ids: dependency.when.option_ids.slice(),
-    },
-    actions: dependency.actions.map(actionToEditor),
-  };
-}
-
-function libraryToEditor(checked, key) {
-  return { version: 1, [key]: checked[key] };
-}
-
-function sequenceToEditor(checked) {
-  return {
-    version: 1,
-    steps: checked.steps.map((step) => ({
-      step_id: step.step_id,
-      theme_id: step.theme_id,
-      enabled_by_default: step.enabled_by_default,
-      dependencies: step.dependencies.map(dependencyToEditor),
-    })),
-  };
-}
-
-function bindingFromEditor(binding, path) {
-  const out = { lora_id: binding?.lora_id ?? "" };
-  const strengthModel = numberFromEditor(binding?.strength_model, `${path}.strength_model`, false);
-  const strengthClip = numberFromEditor(binding?.strength_clip, `${path}.strength_clip`, false);
-  if (strengthModel !== null) out.strength_model = strengthModel;
-  if (strengthClip !== null) out.strength_clip = strengthClip;
-  return out;
-}
-
-function optionFromEditor(option, path) {
-  const bindings = Array.isArray(option?.lora_bindings) ? option.lora_bindings : [];
-  return {
-    option_id: option?.option_id ?? "",
-    label: option?.label ?? "",
-    description: option?.description ?? "",
-    lora_bindings: bindings.map((binding, index) => bindingFromEditor(binding, `${path}.lora_bindings[${index}]`)),
-  };
-}
-
-function actionFromEditor(action, path) {
-  const type = action?.type;
-  if (type === "enable_step" || type === "disable_step") return { type };
-  if (type === "rewrite_instructions") return { type, instructions: action.instructions ?? "" };
-  if (type === "set_select_mode") return { type, select_mode: action.select_mode ?? "" };
-  if (type === "rewrite_options") {
-    let extra;
-    try {
-      extra = JSON.parse(action.rewrite_json?.trim() ? action.rewrite_json : "{}");
-    } catch (exc) {
-      fail(`${path}: rewrite_options JSON is invalid (${exc.message})`);
-    }
-    if (!isObject(extra)) fail(`${path}: rewrite_options must be a JSON object`);
-    delete extra.type;
-    return { type, ...extra };
-  }
-  return { type: type ?? "" };
-}
-
-// Mirrors schema/lora_ids.py. Smallest unused positive integer, formatted lora_N.
-// A non-empty lora_id is kept, including manual ids. Blank means missing, "", or whitespace.
 export function nextLoraId(existingIds) {
   const used = new Set();
   if (Array.isArray(existingIds)) {
@@ -436,7 +266,7 @@ export function nextLoraId(existingIds) {
   return `lora_${number}`;
 }
 
-function loraIdKept(value) {
+function idKept(value) {
   return typeof value === "string" && value.trim() !== "";
 }
 
@@ -445,11 +275,11 @@ export function assignLoraIds(model) {
   if (!Array.isArray(loras)) return model;
   const seen = [];
   for (const entry of loras) {
-    if (entry && loraIdKept(entry.lora_id)) seen.push(entry.lora_id);
+    if (entry && idKept(entry.lora_id)) seen.push(entry.lora_id);
   }
   for (const entry of loras) {
     if (!entry || typeof entry !== "object") continue;
-    if (loraIdKept(entry.lora_id)) continue;
+    if (idKept(entry.lora_id)) continue;
     const id = nextLoraId(seen);
     entry.lora_id = id;
     seen.push(id);
@@ -457,8 +287,6 @@ export function assignLoraIds(model) {
   return model;
 }
 
-// Mirrors schema/theme_ids.py. theme_N is unique in the library.
-// option_N is unique inside one theme. Manual ids are kept.
 function nextPrefixedId(prefix, existingIds) {
   const used = new Set();
   if (Array.isArray(existingIds)) {
@@ -479,19 +307,15 @@ export function nextOptionId(existingIds) {
   return nextPrefixedId("option_", existingIds);
 }
 
-function themeIdKept(value) {
-  return typeof value === "string" && value.trim() !== "";
-}
-
 export function assignOptionIds(options) {
   if (!Array.isArray(options)) return options;
   const seen = [];
   for (const option of options) {
-    if (option && themeIdKept(option.option_id)) seen.push(option.option_id);
+    if (option && idKept(option.option_id)) seen.push(option.option_id);
   }
   for (const option of options) {
     if (!option || typeof option !== "object") continue;
-    if (themeIdKept(option.option_id)) continue;
+    if (idKept(option.option_id)) continue;
     const id = nextOptionId(seen);
     option.option_id = id;
     seen.push(id);
@@ -499,27 +323,13 @@ export function assignOptionIds(options) {
   return options;
 }
 
-export function assignThemeIds(model) {
-  const themes = model?.themes;
-  if (!Array.isArray(themes)) return model;
-  const seen = [];
-  for (const theme of themes) {
-    if (theme && themeIdKept(theme.theme_id)) seen.push(theme.theme_id);
-  }
-  for (const theme of themes) {
-    if (!theme || typeof theme !== "object") continue;
-    if (!themeIdKept(theme.theme_id)) {
-      const id = nextThemeId(seen);
-      theme.theme_id = id;
-      seen.push(id);
-    }
-    assignOptionIds(theme.options);
-  }
+export function assignThemeDocument(model) {
+  if (!model || typeof model !== "object" || Array.isArray(model)) return model;
+  if (!idKept(model.theme_id)) model.theme_id = nextThemeId([]);
+  assignOptionIds(model.options);
   return model;
 }
 
-// Best-effort map from a validator message to editor data-path values.
-// Bracket indexes become dots: themes[0].title -> themes.0.title.
 export function fieldPathsFromError(message) {
   const text = String(message || "");
   const paths = [];
@@ -530,26 +340,25 @@ export function fieldPathsFromError(message) {
     seen.add(normalized);
     paths.push(normalized);
   };
-  const pattern = /\b((?:loras|themes|steps)(?:\[\d+\]|\.[A-Za-z_][\w]*)+)/g;
+  const pattern = /\b((?:loras|options|clauses)(?:\[\d+\]|\.[A-Za-z_][\w]*)+)/g;
   let match = pattern.exec(text);
   while (match) {
     add(match[1]);
     match = pattern.exec(text);
   }
   const extras = [];
-  if (/duplicate theme_id/.test(text)) extras.push("theme_id");
   if (/duplicate option_id/.test(text)) extras.push("option_id");
   if (/duplicate lora_id/.test(text)) extras.push("lora_id");
-  if (/duplicate step_id/.test(text)) extras.push("step_id");
   if (/\bnone_option_id\b/.test(text)) extras.push("none_option_id");
-  if (/rewrite_options/.test(text)) extras.push("rewrite_json");
-  if (/option_ids\b/.test(text) || /exactly one option_id/.test(text)) extras.push("option_ids");
+  if (/\boption_ids\b/.test(text) || /exactly one option_id/.test(text)) extras.push("option_ids");
   if (extras.length && paths.length) {
     const base = paths[0];
     for (const name of extras) {
       if (base.endsWith(`.${name}`) || base.split(".").includes(name)) continue;
       add(`${base}.${name}`);
     }
+  } else {
+    for (const name of extras) add(name);
   }
   return paths;
 }
@@ -558,6 +367,17 @@ function sharedStrength(entry, path) {
   const hasEditorField = entry && Object.prototype.hasOwnProperty.call(entry, "strength");
   const source = hasEditorField ? entry.strength : entry?.strength_model;
   return numberFromEditor(source, `${path}.strength`, true);
+}
+
+function tagsFromEditor(value) {
+  if (Array.isArray(value)) return value.map((item) => String(item));
+  if (typeof value === "string") {
+    return value
+      .split(",")
+      .map((item) => item.trim())
+      .filter((item) => item !== "");
+  }
+  return [];
 }
 
 function documentFromLora(model) {
@@ -571,7 +391,8 @@ function documentFromLora(model) {
       strength_model: strength,
       strength_clip: strength,
     };
-    if (Array.isArray(entry.tags) && entry.tags.length) out.tags = entry.tags;
+    const tags = tagsFromEditor(entry.tags);
+    if (tags.length) out.tags = tags;
     if (entry.enabled_default === false) out.enabled_default = false;
     if (entry.meta && isObject(entry.meta) && Object.keys(entry.meta).length) out.meta = entry.meta;
     return out;
@@ -580,53 +401,48 @@ function documentFromLora(model) {
 }
 
 function documentFromTheme(model) {
-  if (model && Array.isArray(model.themes)) assignThemeIds(model);
-  const themes = (model?.themes || []).map((theme) => ({
-    theme_id: theme.theme_id ?? "",
-    title: theme.title ?? "",
-    instructions: theme.instructions ?? "",
-    select_mode: theme.select_mode ?? "",
-    options: (theme.options || []).map((option, index) => optionFromEditor(option, `options[${index}]`)),
-    none_option_id: blankToNull(theme.none_option_id),
+  if (model && typeof model === "object") assignThemeDocument(model);
+  const options = (model?.options || []).map((option) => ({
+    option_id: option?.option_id ?? "",
+    label: option?.label ?? "",
+    description: option?.description ?? "",
+    tags: tagsFromEditor(option?.tags),
   }));
-  return checkThemeLibrary({ version: 1, themes });
+  const doc = {
+    version: 1,
+    theme_id: model?.theme_id ?? "",
+    title: model?.title ?? "",
+    instructions: model?.instructions ?? "",
+    select_mode: model?.select_mode ?? "",
+    options: options.map((option) => {
+      const out = {
+        option_id: option.option_id,
+        label: option.label,
+        description: option.description,
+      };
+      if (option.tags.length) out.tags = option.tags;
+      return out;
+    }),
+  };
+  const none = model?.none_option_id;
+  if (none !== undefined && none !== null && none !== "") doc.none_option_id = none;
+  return checkTheme(doc);
 }
 
-function documentFromSequence(model) {
-  const steps = (model?.steps || []).map((step, stepIndex) => ({
-    step_id: step.step_id ?? "",
-    theme_id: step.theme_id ?? "",
-    enabled_by_default: step.enabled_by_default !== false,
-    dependencies: (step.dependencies || []).map((dependency, depIndex) => ({
-      when: {
-        step_id: dependency.when?.step_id ?? "",
-        op: dependency.when?.op ?? "",
-        ...(BARE_OPS.has(dependency.when?.op) ? {} : { option_ids: dependency.when?.option_ids || [] }),
-      },
-      actions: (dependency.actions || []).map((action, actionIndex) =>
-        actionFromEditor(action, `steps[${stepIndex}].dependencies[${depIndex}].actions[${actionIndex}]`),
-      ),
-    })),
-  }));
-  return checkSequence({ version: 1, steps });
-}
-
-function blankToNull(value) {
-  if (value === undefined || value === null || value === "") return null;
-  return value;
-}
-
-function emitWhen(when) {
-  const out = { step_id: when.step_id, op: when.op };
-  if (!BARE_OPS.has(when.op)) out.option_ids = when.option_ids;
-  return out;
+function documentFromEnable(model) {
+  const clauses = (model?.clauses || []).map((clause) => {
+    const op = clause?.op ?? "";
+    const out = { theme_id: clause?.theme_id ?? "", op };
+    if (!BARE_OPS.has(op)) out.option_ids = tagsFromEditor(clause?.option_ids);
+    return out;
+  });
+  return checkEnable({ version: 1, match: model?.match || "any", clauses });
 }
 
 function emitLora(checked) {
   return {
     version: 1,
     loras: checked.loras.map((entry) => {
-      // documentFromLora already copied the one editor strength onto both keys.
       const out = {
         lora_id: entry.lora_id,
         name: entry.name,
@@ -642,54 +458,73 @@ function emitLora(checked) {
 }
 
 function emitTheme(checked) {
+  const out = {
+    version: 1,
+    theme_id: checked.theme_id,
+    title: checked.title,
+    instructions: checked.instructions,
+    select_mode: checked.select_mode,
+    options: checked.options.map((option) => {
+      const item = {
+        option_id: option.option_id,
+        label: option.label,
+        description: option.description,
+      };
+      if (option.tags.length) item.tags = option.tags.slice();
+      return item;
+    }),
+  };
+  if (checked.none_option_id) out.none_option_id = checked.none_option_id;
+  return out;
+}
+
+function emitEnable(checked) {
   return {
     version: 1,
-    themes: checked.themes.map((theme) => {
-      const out = {
-        theme_id: theme.theme_id,
-        title: theme.title,
-        instructions: theme.instructions,
-        select_mode: theme.select_mode,
-        options: theme.options,
-      };
-      if (theme.none_option_id) out.none_option_id = theme.none_option_id;
+    match: checked.match,
+    clauses: checked.clauses.map((clause) => {
+      const out = { theme_id: clause.theme_id, op: clause.op };
+      if (!BARE_OPS.has(clause.op)) out.option_ids = clause.option_ids.slice();
       return out;
     }),
   };
 }
 
-function emitSequence(checked) {
-  return {
-    version: 1,
-    steps: checked.steps.map((step) => ({
-      step_id: step.step_id,
-      theme_id: step.theme_id,
-      enabled_by_default: step.enabled_by_default,
-      dependencies: step.dependencies.map((dependency) => ({
-        when: emitWhen(dependency.when),
-        actions: dependency.actions,
-      })),
-    })),
-  };
-}
-
-function emitDocument(kind, checked) {
-  if (kind === "lora") return emitLora(checked);
-  if (kind === "theme") return emitTheme(checked);
-  return emitSequence(checked);
-}
-
 function editorFromChecked(kind, checked) {
-  if (kind === "lora") return libraryToEditor(checked, "loras");
-  if (kind === "theme") return libraryToEditor(checked, "themes");
-  if (kind === "sequence") return sequenceToEditor(checked);
+  if (kind === "lora") return { version: 1, loras: checked.loras };
+  if (kind === "theme") {
+    return {
+      version: 1,
+      theme_id: checked.theme_id,
+      title: checked.title,
+      instructions: checked.instructions,
+      select_mode: checked.select_mode,
+      options: checked.options,
+      none_option_id: checked.none_option_id || "",
+    };
+  }
+  if (kind === "enable") return { version: 1, match: checked.match, clauses: checked.clauses };
   fail(`Unknown editor kind ${kind}`);
 }
 
 function documentFromModel(kind, model) {
   if (kind === "lora") return documentFromLora(model);
   if (kind === "theme") return documentFromTheme(model);
-  if (kind === "sequence") return documentFromSequence(model);
+  if (kind === "enable") return documentFromEnable(model);
+  fail(`Unknown editor kind ${kind}`);
+}
+
+function emitDocument(kind, checked) {
+  if (kind === "lora") return emitLora(checked);
+  if (kind === "theme") return emitTheme(checked);
+  if (kind === "enable") return emitEnable(checked);
+  fail(`Unknown editor kind ${kind}`);
+}
+
+function checkDocument(kind, data) {
+  if (kind === "lora") return checkLoraLibrary(data);
+  if (kind === "theme") return checkTheme(data);
+  if (kind === "enable") return checkEnable(data);
   fail(`Unknown editor kind ${kind}`);
 }
 
@@ -703,8 +538,7 @@ export function parseEditorDocument(kind, text) {
   }
   try {
     if (!isObject(data)) fail("Document must be a JSON object.");
-    const checked =
-      kind === "lora" ? checkLoraLibrary(data) : kind === "theme" ? checkThemeLibrary(data) : kind === "sequence" ? checkSequence(data) : fail(`Unknown editor kind ${kind}`);
+    const checked = checkDocument(kind, data);
     return { ok: true, model: editorFromChecked(kind, checked) };
   } catch (exc) {
     if (exc instanceof EditorModelError) return { ok: false, error: exc.message };
@@ -724,21 +558,20 @@ export function commitModel(kind, model) {
 }
 
 export function blankLora() {
-  // lora_id stays blank until assignLoraIds (Add LoRA and a valid write). Both strengths match.
   return { lora_id: "", name: "", strength_model: 0.8, strength_clip: 0.8, tags: [], enabled_default: true, meta: null };
 }
 
-export function blankBinding() {
-  return { lora_id: "", strength_model: "", strength_clip: "" };
-}
-
 export function blankOption() {
-  return { option_id: "", label: "", description: "", lora_bindings: [] };
+  return { option_id: "", label: "", description: "", tags: [] };
 }
 
-export function blankTheme() {
-  // theme_id stays blank until assignThemeIds (Add Theme and a valid write).
+export function blankClause() {
+  return { theme_id: "", op: "includes_any", option_ids: [] };
+}
+
+export function emptyThemeModel() {
   return {
+    version: 1,
     theme_id: "",
     title: "",
     instructions: "",
@@ -748,25 +581,8 @@ export function blankTheme() {
   };
 }
 
-export function blankAction(type = "enable_step") {
-  if (type === "rewrite_instructions") return { type, instructions: "" };
-  if (type === "set_select_mode") return { type, select_mode: "single" };
-  if (type === "rewrite_options") return { type, rewrite_json: "{}" };
-  return { type: type === "disable_step" ? "disable_step" : "enable_step" };
-}
-
-export function blankDependency() {
-  return { when: { step_id: "", op: "includes_any", option_ids: [] }, actions: [blankAction("enable_step")] };
-}
-
-export function blankStep() {
-  return { step_id: "", theme_id: "", enabled_by_default: true, dependencies: [] };
-}
-
-export function emptyModel(kind) {
-  if (kind === "lora") return { version: 1, loras: [] };
-  if (kind === "theme") return { version: 1, themes: [] };
-  return { version: 1, steps: [] };
+export function emptyEnableModel() {
+  return { version: 1, match: "any", clauses: [] };
 }
 
 export function splitList(text) {
@@ -788,9 +604,6 @@ function uniqueStrings(value) {
   return names;
 }
 
-// Stock Lora Loader publishes its file list as the lora_name combo on
-// /object_info. An empty array means the list was present and had no files.
-// null means this payload has no recognizable list.
 export function loraNamesFromSpec(spec) {
   if (Array.isArray(spec)) {
     if (Array.isArray(spec[0])) return uniqueStrings(spec[0]);

@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "theme_id": "character_pack",
+  "title": "角色包",
+  "instructions": "是否套用角色 LoRA（可複選）。",
+  "select_mode": "multi",
+  "options": [
+    {
+      "option_id": "waifu_a",
+      "label": "角色 A",
+      "description": "提到角色 A 的名字或特徵",
+      "tags": ["char_a"]
+    },
+    {
+      "option_id": "waifu_b",
+      "label": "角色 B（示範無檔）",
+      "description": "提到角色 B",
+      "tags": ["char_b"]
+    }
+  ]
+}

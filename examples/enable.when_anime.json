@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "match": "any",
+  "clauses": [
+    {
+      "theme_id": "art_style",
+      "op": "includes_any",
+      "option_ids": ["anime"]
+    }
+  ]
+}

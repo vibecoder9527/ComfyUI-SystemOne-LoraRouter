@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "theme_id": "theme_1",
+  "title": "Theme",
+  "instructions": "Choose the options that fit the prompt.",
+  "select_mode": "single",
+  "options": []
+}

@@ -5,19 +5,22 @@
       "lora_id": "style_anime_v3",
       "name": "anime_style_v3.safetensors",
       "strength_model": 0.8,
-      "strength_clip": 0.8
+      "strength_clip": 0.8,
+      "tags": ["style_anime"]
     },
     {
       "lora_id": "style_realistic",
       "name": "realistic_skin_v2.safetensors",
       "strength_model": 0.7,
-      "strength_clip": 0.7
+      "strength_clip": 0.7,
+      "tags": ["style_realistic"]
     },
     {
       "lora_id": "char_a",
       "name": "character_a.safetensors",
       "strength_model": 0.9,
-      "strength_clip": 0.9
+      "strength_clip": 0.9,
+      "tags": ["char_a"]
     }
   ]
 }

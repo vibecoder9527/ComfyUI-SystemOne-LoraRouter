@@ -1,31 +1,37 @@
 """SystemOne LoRA Router.
 
 ComfyUI loads this file from ``custom_nodes/ComfyUI-SystemOne-LoraRouter``.
-Wire LoRA Library and Theme Library into Theme Sequence, then MODEL downstream.
 
-``S1_LORA_LIB`` and ``S1_THEME_LIB`` are custom type names. ComfyUI matches
-them as strings. The sequence itself stays on the Theme Sequence widget
-(``sequence_json``); it is not a wire type.
+Wire one or more Theme nodes into a chain (or merge branches with Theme
+Collect). Wire the final ``S1_THEME_RESULT`` and a LoRA Library into LoRA
+Aggregate with MODEL. Themes default to disabled. A root sets ``run`` to
+``enabled``. A downstream theme sets ``run`` to ``when_upstream`` and targets
+upstream option ids in ``enable_json``.
 
-``js/`` is the v2 visual editor. The sidebar tab is "S1 Editors". A node
-button opens that tab, or a modal when the sidebar API is missing. The
-editor reads and writes the same JSON widgets. It is not a new wire type.
+``S1_LORA_LIB`` and ``S1_THEME_RESULT`` are custom type names. ComfyUI matches
+them as strings.
+
+``js/`` is the visual editor. It opens a modal from the node. It does not
+register a sidebar tab. The editor reads and writes the same JSON widgets.
 """
 
+from .nodes.lora_aggregate import S1LoraAggregate
 from .nodes.lora_library import S1LoraLibrary
-from .nodes.theme_library import S1ThemeLibrary
-from .nodes.theme_sequence import S1ThemeSequence
+from .nodes.theme import S1Theme
+from .nodes.theme_collect import S1ThemeCollect
 
 NODE_CLASS_MAPPINGS = {
     "S1LoraLibrary": S1LoraLibrary,
-    "S1ThemeLibrary": S1ThemeLibrary,
-    "S1ThemeSequence": S1ThemeSequence,
+    "S1Theme": S1Theme,
+    "S1ThemeCollect": S1ThemeCollect,
+    "S1LoraAggregate": S1LoraAggregate,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "S1LoraLibrary": "LoRA Library",
-    "S1ThemeLibrary": "Theme Library",
-    "S1ThemeSequence": "Theme Sequence",
+    "S1Theme": "Theme",
+    "S1ThemeCollect": "Theme Collect",
+    "S1LoraAggregate": "LoRA Aggregate",
 }
 
 # ComfyUI serves every .js file in this directory as a frontend extension.

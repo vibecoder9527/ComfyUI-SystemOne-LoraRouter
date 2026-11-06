@@ -1,6 +1,6 @@
-"""LoRA Library node. SPEC §2.1.
+"""LoRA Library node.
 
-Parses library JSON into an ``S1_LORA_LIB``. Does not read ``.safetensors``.
+Parses library JSON into an ``S1_LORA_LIB``. Does not read weight files.
 """
 
 from __future__ import annotations
@@ -11,7 +11,7 @@ CATEGORY = "SystemOne/LoraRouter"
 
 
 class S1LoraLibrary:
-    """Define the LoRA ids Theme Sequence is allowed to apply."""
+    """Define LoRA ids, file names, strengths, and tags."""
 
     CATEGORY = CATEGORY
     FUNCTION = "build"
@@ -19,9 +19,9 @@ class S1LoraLibrary:
     RETURN_NAMES = ("lora_lib",)
     DESCRIPTION = (
         "Parse a LoRA library JSON object into S1_LORA_LIB. "
-        "Stores the file name under ComfyUI loras/ and the default strengths. "
+        "Stores the file name under ComfyUI loras/, tags, and the strengths. "
         "Does not load the weight file. "
-        "The S1 Editors sidebar, or the Open visual editor button, edits library_json. "
+        "Open visual editor opens a modal that edits library_json. "
         "Its name field can pick a file from the ComfyUI loras list; typed names still work."
     )
 
@@ -29,7 +29,6 @@ class S1LoraLibrary:
     def INPUT_TYPES(cls):
         return {
             "required": {
-                # dynamicPrompts off: the default value is JSON and contains braces.
                 "library_json": (
                     "STRING",
                     {
@@ -38,7 +37,7 @@ class S1LoraLibrary:
                         "dynamicPrompts": False,
                         "tooltip": (
                             'JSON object {"version": 1, "loras": [LoraEntry, ...]}. '
-                            "The empty default is valid."
+                            "The empty default is valid. Tags are matched by LoRA Aggregate."
                         ),
                     },
                 ),

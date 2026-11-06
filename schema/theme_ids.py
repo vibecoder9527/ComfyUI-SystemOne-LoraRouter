@@ -1,16 +1,18 @@
 """Editor helpers for theme ids and option ids.
 
-`js/s1_model.js` mirrors these (`assignThemeIds`, `nextThemeId`, `nextOptionId`).
-`parse_theme_library` does not call this module. Stored JSON still requires
-`theme_id` and `option_id`.
+`js/s1_model.js` mirrors these (`assignThemeDocument`, `nextThemeId`,
+`nextOptionId`). `parse_theme` does not call this module. Stored JSON still
+requires `theme_id` and `option_id`.
 
-Theme ids are unique in the library. Option ids are unique within one theme.
-The smallest unused positive integer wins: `theme_1`, `theme_2`, `option_1`,
-`option_2`, filling gaps. A non-empty id is kept, including manual ids such as
-`art_style` or `anime`. Blank means missing, `None`, `""`, or whitespace.
+Option ids are unique within one theme. The smallest unused positive integer
+wins: `theme_1`, then `theme_2`, and `option_1`, `option_2`, filling gaps.
+A non-empty id is kept, including manual ids such as `art_style` or `anime`.
+Blank means missing, `None`, `""`, or whitespace.
 
-Filling an id does not rewrite sequence steps. Those still cite `theme_id`
-by the string the user stored.
+One theme node cannot see the other nodes' ids. A blank theme id becomes
+`theme_1` on that document. A chain that repeats a theme id fails at runtime.
+Set a manual id in the JSON widget when the default collides; a later edit
+keeps it.
 """
 
 from __future__ import annotations
@@ -19,6 +21,7 @@ from typing import Any, Iterable
 
 __all__ = [
     "ensure_option_ids",
+    "ensure_theme_document",
     "ensure_theme_ids",
     "next_option_id",
     "next_theme_id",
@@ -86,12 +89,26 @@ def ensure_option_ids(options: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return filled
 
 
+def ensure_theme_document(theme: dict[str, Any]) -> dict[str, Any]:
+    """Copy one theme dict and fill a blank ``theme_id`` and blank option ids.
+
+    A non-empty ``theme_id`` is kept. A blank id becomes ``theme_1`` unless
+    that string is already the id (it is not, when the id is blank). The input
+    dict is not mutated.
+    """
+
+    if not isinstance(theme, dict):
+        raise TypeError("theme must be a dict")
+    return ensure_theme_ids([theme])[0]
+
+
 def ensure_theme_ids(themes: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Copy `themes`, fill blank `theme_id` values, and fill option ids per theme.
 
-    Option ids are scoped to that theme's `options` list. A theme with no
-    `options` key is left without one. The input list and its dicts are not
-    mutated.
+    Used when migrating a library of theme dicts. Option ids are scoped to
+    that theme's `options` list. A theme with no `options` key is left without
+    one. The input list and its dicts are not mutated. `parse_theme` does not
+    call this.
     """
 
     if not isinstance(themes, list):
