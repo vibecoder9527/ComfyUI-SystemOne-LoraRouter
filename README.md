@@ -2,7 +2,7 @@
 
 ComfyUI custom nodes: SystemOne LoRA Router (theme library / LoRA library / theme sequence)
 
-Three canvas nodes. LoRA Library and Theme Library feed Theme Sequence. Theme Sequence asks SystemOne, aggregates LoRA bindings, and outputs MODEL. The contract is [SPEC.md](SPEC.md).
+Three canvas nodes. LoRA Library and Theme Library feed Theme Sequence. Theme Sequence POSTs to SystemOne, aggregates LoRA bindings, and outputs MODEL. The contract is [SPEC.md](SPEC.md).
 
 ## Install
 
@@ -21,7 +21,7 @@ Or symlink a checkout you already have:
 ln -s /path/to/ComfyUI-SystemOne-LoraRouter /path/to/ComfyUI/custom_nodes/ComfyUI-SystemOne-LoraRouter
 ```
 
-Restart ComfyUI after installing. The skeleton uses the Python standard library only. `requirements.txt` lists no third-party packages, so there is nothing to pip-install for this pass.
+Restart ComfyUI after installing. This package uses the Python standard library only (`urllib.request`, `json`, `uuid`, `os`). `requirements.txt` lists no third-party packages, so there is nothing to pip-install.
 
 The nodes show up under **SystemOne → LoraRouter**:
 
@@ -33,11 +33,11 @@ The nodes show up under **SystemOne → LoraRouter**:
 
 Wire both libraries into Theme Sequence, along with `model`, the positive prompt (`positive`), and `sequence_json`. Connect the `CLIP` output only when a clip input is connected too. With no clip input, the second output is `None`.
 
-Set the API key on Theme Sequence, or export `SYSTEM_ONE_API_KEY` and leave the widget blank. A non-empty widget wins. The default endpoint is `https://system-one.dev/v1/systemone`. A blank `api_model` becomes the skeleton fallback `unspecified`. SPEC §6 leaves the production model id open, so this package does not hard-code one.
+Set the API key on Theme Sequence, or export `SYSTEM_ONE_API_KEY` and leave the widget blank. A non-empty widget wins. The default endpoint is `https://system-one.dev/v1/systemone`. A blank `api_model` becomes the fallback `unspecified`. SPEC §6 leaves the production model id open, so this package does not hard-code one. A live SystemOne call requires a key.
 
 JSON widgets set `dynamicPrompts` off so `{` stays literal JSON.
 
-## What this skeleton runs
+## What this package runs
 
 Validation of library, theme, and sequence JSON is real (`schema/types.py`). The walk in `sequence_engine.py` is real:
 
@@ -48,11 +48,13 @@ Validation of library, theme, and sequence JSON is real (`schema/types.py`). The
 
 Invalid JSON on a library node fails that node. A library cannot be built from a broken document. Runtime failures belong to Theme Sequence's `on_error`.
 
-## Still stubbed
+**SystemOne HTTP** is live. `systemone/client.py` POSTs JSON with `Authorization: Bearer …` and `Idempotency-Key: <uuid4>` via `urllib.request`. Choice reads `answers[qid].choice`; noul reads `answers[qid].noul`. A missing key raises before a socket is opened.
 
-- **SystemOne HTTP.** `systemone/client.py` builds the POST body (`model`, `state: {positive, negative}`, `questions`) and the bearer / `Idempotency-Key` headers, then returns a canned decision. It performs no HTTP. Choice picks the first option at confidence 1.0. Noul returns `1.0`, so the default threshold 0.5 selects that option.
-- **LoRA weights.** `apply_loras.py` calls `comfy.sd.load_lora_for_models` when that import works (`clip` may be `None`). Outside ComfyUI it leaves MODEL and CLIP unchanged and says so in the report. Each applied row then has `loaded: false`.
-- **UI editor is v2.** This package is ComfyUI widgets and multiline JSON only. There is no custom frontend.
+**LoRA apply** uses `folder_paths.get_full_path`, `comfy.utils.load_torch_file`, and `comfy.sd.load_lora_for_models` when ComfyUI is importable (`clip` may be `None`). Outside ComfyUI it leaves MODEL and CLIP unchanged and says so in the report. Each applied row then has `loaded: false`. Unittest mocks those imports.
+
+## Still v2
+
+The sidebar UI editor is v2. This package is ComfyUI widgets and multiline JSON only. There is no custom frontend.
 
 ## Examples
 
@@ -63,10 +65,10 @@ Invalid JSON on a library node fails that node. A library cannot be built from a
 | `examples/sequence.empty.json` | Widget default |
 | `examples/*.minimal.json` | SPEC §5: two themes, one dependency, three LoRAs |
 
-With the canned client, the minimal sequence selects `anime` (the first choice option), enables step `s2`, keeps `waifu_a`, and lists `char_a` and `style_anime_v3`. Weights are patched only when the package runs inside ComfyUI and those files exist under `loras/`.
+The minimal sequence is: prompt leans anime → s1 selects `anime` → enable s2, keep `waifu_a` → list `char_a` and `style_anime_v3`. Weights are patched only when the package runs inside ComfyUI and those files exist under `loras/`. Unittest mocks HTTP (and ComfyUI) so it needs no live key and no ComfyUI install.
 
 ## Check
 
 ```bash
-python -m unittest tests.test_skeleton
+python3 -m unittest tests.test_skeleton
 ```
