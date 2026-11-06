@@ -1,7 +1,8 @@
-"""SystemOne client. The skeleton implementation is an offline stub."""
+"""SystemOne HTTP client. ``decide`` POSTs JSON to the live endpoint."""
 
 from .client import (
     DEFAULT_ENDPOINT,
+    DEFAULT_TIMEOUT,
     ENV_API_KEY,
     SKELETON_MODEL_FALLBACK,
     SystemOneClient,
@@ -12,6 +13,7 @@ from .client import (
 
 __all__ = [
     "DEFAULT_ENDPOINT",
+    "DEFAULT_TIMEOUT",
     "ENV_API_KEY",
     "SKELETON_MODEL_FALLBACK",
     "SystemOneClient",
