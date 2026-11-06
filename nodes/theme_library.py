@@ -20,7 +20,8 @@ class S1ThemeLibrary:
     DESCRIPTION = (
         "Parse a theme library JSON object into S1_THEME_LIB. "
         "select_mode single is a SystemOne choice; multi is one noul per option. "
-        "Bindings store lora_id, not file paths."
+        "Bindings store lora_id, not file paths. "
+        "The S1 Editors sidebar, or the Open visual editor button, edits library_json."
     )
 
     @classmethod

@@ -7,7 +7,9 @@ Wire LoRA Library and Theme Library into Theme Sequence, then MODEL downstream.
 them as strings. The sequence itself stays on the Theme Sequence widget
 (``sequence_json``); it is not a wire type.
 
-The sidebar editor is v2. This package registers widgets only.
+``js/`` is the v2 visual editor. The sidebar tab is "S1 Editors". A node
+button opens that tab, or a modal when the sidebar API is missing. The
+editor reads and writes the same JSON widgets. It is not a new wire type.
 """
 
 from .nodes.lora_library import S1LoraLibrary
@@ -26,4 +28,11 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "S1ThemeSequence": "Theme Sequence",
 }
 
-__all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS"]
+# ComfyUI serves every .js file in this directory as a frontend extension.
+WEB_DIRECTORY = "./js"
+
+__all__ = [
+    "NODE_CLASS_MAPPINGS",
+    "NODE_DISPLAY_NAME_MAPPINGS",
+    "WEB_DIRECTORY",
+]

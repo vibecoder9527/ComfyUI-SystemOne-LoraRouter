@@ -20,7 +20,8 @@ class S1LoraLibrary:
     DESCRIPTION = (
         "Parse a LoRA library JSON object into S1_LORA_LIB. "
         "Stores the file name under ComfyUI loras/ and the default strengths. "
-        "Does not load the weight file."
+        "Does not load the weight file. "
+        "The S1 Editors sidebar, or the Open visual editor button, edits library_json."
     )
 
     @classmethod
