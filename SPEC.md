@@ -122,7 +122,8 @@ INPUT_TYPES:
       # passthrough：API 失敗則原 model/clip 原樣輸出
     strength_conflict: (["max", "sum_clamp_1", "last_wins"], {"default": "max"})
     min_confidence: ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.01})
-      # choice 低於門檻時改用該主題的 fallback_option_id（若有）
+      # choice 低於門檻時仍保留該 choice，report 記 low_confidence_kept。
+      # 無效 choice 失敗。fallback_option_id 已移除、不再使用。
 
 RETURN_TYPES: ("MODEL", "CLIP", "STRING")
 RETURN_NAMES: ("model", "clip", "report_json")
@@ -205,18 +206,20 @@ RETURN_NAMES: ("model", "clip", "report_json")
   "instructions": "依提示詞判斷最適合的主要畫風。",
   "select_mode": "single",
   "options": [ /* ThemeOption[] */ ],
-  "fallback_option_id": "realistic",
   "none_option_id": null
 }
 ```
 
 | 欄位 | 說明 |
 |------|------|
-| `theme_id` | 庫內唯一；序列步驟引用 |
+| `theme_id` | 庫內唯一；序列步驟引用。存檔必填。編輯器對空白 id 填最小未用的 `theme_N`，已有非空 id（含手動 id）保留 |
 | `select_mode` | `"single"` \| `"multi"` |
 | `instructions` | SystemOne `questions.*.instructions` |
-| `fallback_option_id` | single：低信心或無效答案時使用；multi：可為 `null`（表示全不選） |
-| `none_option_id` | **預設**：single 且至少 2 個選項時，可設一個「都不套」的虛擬選項（無 bindings）；未設則必須選一個有意義的選項 |
+| `none_option_id` | 可省略或 `null`。若有值，必須是本主題的某個 `option_id`（可把該選項的 id 設成 `none`，表示都不套、且無 bindings）。choice `none` 只是這個 option id，沒有另外的替換規則 |
+
+`option_id` 在同一主題內唯一。存檔必填。編輯器對空白 option id 填該主題內最小未用的 `option_N`。不同主題可以各自有 `option_1`。已有非空 id 保留。自動補 id **不會**改寫序列步驟裡的 `theme_id`。
+
+`fallback_option_id` **已移除、不再使用**。文件若仍帶此欄，驗證以未知欄位拒絕。低信心（`confidence < min_confidence`）保留原 choice，report 記 `low_confidence_kept`。無效 choice 直接失敗，不替換選項。
 
 `ThemeLibrary`：
 
@@ -360,8 +363,9 @@ RETURN_NAMES: ("model", "clip", "report_json")
 - `POST https://system-one.dev/v1/systemone`  
 - Header：`Authorization: Bearer …`，建議 `Idempotency-Key: <uuid4>`  
 - 讀 `answers[<step_id>].choice` → 選中的 `option_id`  
-- 若有 `confidence` 且 `< min_confidence` → 改用 `fallback_option_id`  
-- Choice 至少需要模型允許的最少選項數（文件：多數 ≥2；以模型 `minChoiceOptions` 為準）。**預設**：若 rewrite 後只剩 1 個 option，自動補一個 `__none__`（無 binding）以滿足 API，或直接不呼叫、視為選中唯一選項（實作選：**只剩 1 個則跳過 API、直接採用**）。
+- 若有 `confidence` 且 `< min_confidence` → **仍保留**該 choice，report 記 `low_confidence_kept`（不替換選項）  
+- 無效 choice（不在執行期選項內）→ 失敗。`fallback_option_id` 已移除、不再使用  
+- Choice 至少需要模型允許的最少選項數（文件：多數 ≥2；以模型 `minChoiceOptions` 為準）。**預設**：若 rewrite 後只剩 1 個 option，自動補一個 `__none__`（無 binding）以滿足 API，或直接不呼叫、視為選中唯一選項（實作選：**只剩 1 個則跳過 API、直接採用**）。本實作不發明額外 `__none__` 選項。`none_option_id` 仍是主題上的可選參考。
 
 #### 4.2.2 `select_mode: "multi"` → 每個 option 一個 `noul`
 
@@ -471,7 +475,6 @@ model, clip = load_lora_for_models(
       "title": "畫風",
       "instructions": "判斷提示詞的主要畫風。",
       "select_mode": "single",
-      "fallback_option_id": "realistic",
       "options": [
         {
           "option_id": "anime",
@@ -496,7 +499,6 @@ model, clip = load_lora_for_models(
       "title": "角色包",
       "instructions": "是否套用角色 LoRA（可複選）。",
       "select_mode": "multi",
-      "fallback_option_id": null,
       "options": [
         {
           "option_id": "waifu_a",

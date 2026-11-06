@@ -41,7 +41,7 @@ JSON widgets set `dynamicPrompts` off so `{` stays literal JSON.
 
 Validation of library, theme, and sequence JSON is real (`schema/types.py`). The walk in `sequence_engine.py` is real:
 
-- `select_mode: single` sends a SystemOne `choice` question. If rewrite leaves one option, the step skips the call and takes that option.
+- `select_mode: single` sends a SystemOne `choice` question. If rewrite leaves one option, the step skips the call and takes that option. A choice that is not an option fails the step. When `confidence` is present and below `min_confidence`, the choice is kept and the report notes `low_confidence_kept`.
 - `select_mode: multi` sends one `noul` question per option. `noul >= noul_threshold` selects it. More than 32 options are split across requests that share the same state.
 - Dependencies are OR. Each match runs its actions in order: `enable_step`, `disable_step`, `rewrite_options`, `rewrite_instructions`, `set_select_mode`. Rewrites edit a runtime copy of the theme. The Theme Library object stays as the library node built it.
 - `on_error=passthrough` (the default) returns the input MODEL and CLIP and writes the failure into `report_json`. `raise` stops the graph. When ComfyUI is importable, a missing LoRA file is skipped on passthrough and listed in `errors`.
@@ -68,14 +68,20 @@ Restart ComfyUI after installing so it loads `js/` (`WEB_DIRECTORY`).
 | Node | Widget the editor writes | What the form edits |
 | --- | --- | --- |
 | LoRA Library | `library_json` | LoRA entries: read-only auto id (`lora_1`, `lora_2`, ...), file name (`name`), one strength for model and clip, tags, enabled default |
-| Theme Library | `library_json` | Themes, options, select mode, bindings, fallback and none ids |
-| Theme Sequence | `sequence_json`, `positive`, `negative` | Prompts (positive, then negative), steps, theme id, and dependencies |
+| Theme Library | `library_json` | Themes and options with read-only auto ids (`theme_1`, `option_1`, ...), select mode, bindings, and an optional `none_option_id` |
+| Theme Sequence | `sequence_json`, `positive`, `negative` | Prompts (positive, then negative), steps, an editable theme id, and dependencies |
 
 ### Using an editor
 
-- **Reload from node** reads the widget again. **Open visual editor** does that too, so unapplied form edits are replaced by the widget text. On Theme Sequence it also reloads `positive` and `negative`.
-- **Apply to node** checks the form, writes pretty JSON into the widget, and marks the graph dirty. Typing does not write the widget. On Theme Sequence one Apply writes `positive`, `negative`, and `sequence_json` together. Invalid sequence JSON blocks that write, including the prompts.
-- Invalid JSON shows the error and the original text. Fix it and choose **Try form**, or keep editing the multiline widget on the node. Apply does not replace the widget until the text parses.
+Opening the editor loads that node's widgets into the form. On Theme Sequence it also loads `positive` and `negative`.
+
+Valid edits are written to those widgets after a short pause (about 220ms) and the graph is marked dirty when the text changes. Saving the workflow still stores the widgets. There is no separate Apply or Reload action.
+
+An invalid draft stays in the editor. The node keeps the last valid JSON. The error is shown, and the failing field is drawn with a red outline (CSS class `s1-invalid`). The validator reports one error at a time, so the outline follows that field. In the raw JSON box the outline is on the box itself.
+
+Theme Sequence writes `positive`, `negative`, and `sequence_json` on the same valid update. Invalid sequence JSON blocks that write, including the prompts.
+
+Raw JSON that does not parse stays in the raw box. **Try form** parses it and, when the document is valid, writes the node and opens the form. A pause does the same write if the raw text becomes valid on its own.
 
 ### LoRA file name
 
@@ -84,25 +90,40 @@ Each entry's `name` is the relative file name under ComfyUI `models/loras`, the 
 - Type a name yourself. The text box stays editable, and its suggestions use the same list when ComfyUI returned one.
 - **Browse loras…** opens a filterable list on that entry. Choosing a row copies the relative name into `name`. **Hide lora list** closes it.
 - **Refresh loras** asks ComfyUI again. The editor reads `/object_info` for `LoraLoader` or `LoraLoaderModelOnly` and uses the `lora_name` combo. If that list is missing, it tries `api.getModels("loras")` and then `/models/loras`.
-- **Apply to node** is what saves the name into `library_json`. The picker does not copy or rename files on disk.
-- A name that is not in the current list is kept. Apply still writes it.
+- A valid edit writes the name into `library_json`. The picker does not copy or rename files on disk.
+- A name that is not in the current list is kept. The next valid write still stores it.
 
 ### LoRA id and strength
 
-The LoRA Library form does not edit `lora_id`. The card title and a read-only field show it. **Add LoRA** assigns the smallest free id, `lora_1`, then `lora_2`, filling gaps such as a missing `lora_2`. Apply fills a missing or blank id the same way before it writes `library_json`. An id that is already set is kept, including older manual ids such as `style_anime_v3`. Theme bindings are not rewritten. They still cite `lora_id` by hand.
+The LoRA Library form does not edit `lora_id`. The card title and a read-only field show it. **Add LoRA** assigns the smallest free id, `lora_1`, then `lora_2`, filling gaps such as a missing `lora_2`. A valid write fills a missing or blank id the same way before it writes `library_json`. An id that is already set is kept, including older manual ids such as `style_anime_v3`. Theme bindings are not rewritten. They still cite `lora_id` by hand.
 
-The library form has one control, **strength (model & clip)**. Apply writes that number to both `strength_model` and `strength_clip`. The stored JSON does not gain a `strength` key, and both keys stay required. If a loaded entry has two different strengths, the form shows `strength_model`, and the next Apply copies that value onto `strength_clip`. Theme option bindings still have their own optional `strength_model` and `strength_clip` boxes. A blank binding strength still means the library default.
+The library form has one control, **strength (model & clip)**. A valid write puts that number on both `strength_model` and `strength_clip`. The stored JSON does not gain a `strength` key, and both keys stay required. If a loaded entry has two different strengths, the form shows `strength_model`, and the next valid write copies that value onto `strength_clip`. Theme option bindings still have their own optional `strength_model` and `strength_clip` boxes. A blank binding strength still means the library default.
 
-Old library JSON keeps working. Manual ids stay. Entries that already store different `strength_model` and `strength_clip` values still validate. Apply is what copies one number onto both keys.
+Old library JSON keeps working. Manual ids stay. Entries that already store different `strength_model` and `strength_clip` values still validate. The next valid write is what copies one number onto both keys.
+
+### Theme id and option id
+
+The Theme Library form does not edit `theme_id` or `option_id`. Card titles and read-only fields show them. **Add Theme** assigns the smallest free `theme_N`. **Add Option** assigns the smallest free `option_N` inside that theme, so two themes may both use `option_1`. A valid write fills an id that is still blank. An id that is already set is kept, including older manual ids such as `art_style` and `anime`. Removing a card leaves the other ids as they are.
+
+Sequence steps keep an editable `theme_id`. Filling theme ids does not rewrite steps.
+
+`none_option_id` remains optional. The control lists that theme's option ids, plus unset. It must name an option on the same theme. `fallback_option_id` is removed. JSON that still contains it fails validation as an unknown field. A choice of `none` is an ordinary option id when the theme defines that option.
 
 ### Prompts on Theme Sequence
 
-The Theme Sequence editor starts with **Prompts**: the positive textarea, then the negative textarea directly under it. Those boxes are the node widgets `positive` and `negative`. They are not fields inside `sequence_json`.
+The Theme Sequence editor starts with **Prompts**: the positive textarea, then the negative textarea directly under it. Those boxes are the node widgets `positive` and `negative`. They are not fields inside `sequence_json`. A valid sequence writes them together with `sequence_json`. An invalid sequence leaves the JSON and the prompt widgets unchanged.
 
 On the node, `negative` is a required multiline string directly under `positive`. `clip` stays optional. A blank negative is still sent as `""`.
 
 ### Known limitations
 
+- Valid form edits reach the node after about 220ms. An invalid draft is kept locally, with a red outline on the failing field, and the widget stays on the last valid JSON.
+- The outline follows the first error the validator reports. The next error is shown after that field is fixed.
+- Opening the editor loads the widgets again. That replaces the draft, including an invalid draft that was never written.
+- While the editor is on screen and the draft is valid and matches the last write, it polls the widgets about twice a second. A different widget string, or a different prompt on Theme Sequence, reloads the form. This package has no ComfyUI widget-change hook, so outside edits show up only through that poll, and only while the sidebar or the modal is visible.
+- A draft that is invalid, or still inside the write pause, is left in place. The next valid write can replace an outside edit made during that pause.
+- Switching nodes writes a valid paused edit to the previous node. An invalid draft is dropped.
+- Raw JSON is written when it parses. Until then the raw box has the red outline and the node is unchanged.
 - No live SystemOne API preview or dry-run from the UI.
 - `rewrite_options` is a JSON object (`keep_option_ids`, `add_options`, `remove_option_ids`, `patch_bindings`). The other action types have fields.
 - Requires a ComfyUI build that loads `WEB_DIRECTORY` extensions. Restart ComfyUI after install.
@@ -111,8 +132,8 @@ On the node, `negative` is a required multiline string directly under `positive`
 - The list is relative names (`folder/file.safetensors`), not a full disk path. **Refresh loras** after you add files. ComfyUI rebuilds that combo when `/object_info` is requested.
 - Workflows saved before `negative` moved under `positive` may have stored widget values by position. Builds that save widget names reload the right fields. If an old workflow only has an ordered values list, check that `negative` did not land in `sequence_json` the first time you open it.
 - The multiline JSON widgets remain the power-user path. Graph serialization is unchanged: the workflow stores the JSON on the node. There is still no fourth sequence wire.
-- `meta` on a LoRA entry is kept on Apply, and the form does not edit it.
-- The LoRA Library editor does not keep different `strength_model` and `strength_clip` values on one entry. It shows `strength_model`, and Apply writes that number to both. Edit the JSON widget when one library entry must keep two strengths. Theme bindings can still override them separately.
+- `meta` on a LoRA entry is kept when a valid edit is written, and the form does not edit it.
+- The LoRA Library editor does not keep different `strength_model` and `strength_clip` values on one entry. It shows `strength_model`, and the next valid write puts that number on both. Edit the JSON widget when one library entry must keep two strengths. Theme bindings can still override them separately.
 
 ## Examples
 
