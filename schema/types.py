@@ -21,6 +21,12 @@ EMPTY_THEME_JSON = (
 )
 EMPTY_ENABLE_JSON = '{ "match": "any", "clauses": [] }'
 
+# Option sockets on Theme Root and Theme. Report JSON is the next output.
+# ComfyUI validates link indexes against RETURN_TYPES, so the count is fixed
+# and unused slots stay blocked. The frontend hides the unused ones.
+MAX_OPTION_OUTPUTS = 32
+REPORT_OUTPUT_INDEX = MAX_OPTION_OUTPUTS
+
 SELECT_MODES = ("single", "multi")
 RUN_MODES = ("disabled", "enabled", "when_upstream")
 ENABLE_MATCH = ("any", "all")
@@ -175,6 +181,46 @@ class ThemeResult:
         return None
 
 
+@dataclass(frozen=True)
+class RouterSettings:
+    """API and error policy for every theme that shares one Settings node.
+
+    ``api_key`` is not included in ``repr`` and must not be copied into reports.
+    """
+
+    api_key: str
+    api_model: str
+    endpoint: str
+    noul_threshold: float
+    on_error: str
+    min_confidence: float
+
+    def __repr__(self) -> str:
+        key = "set" if self.api_key else "empty"
+        return (
+            "RouterSettings("
+            f"api_key={key}, api_model={self.api_model!r}, endpoint={self.endpoint!r}, "
+            f"noul_threshold={self.noul_threshold!r}, on_error={self.on_error!r}, "
+            f"min_confidence={self.min_confidence!r})"
+        )
+
+
+@dataclass
+class DecisionPayload:
+    """Value on a selected option slot, or the merged Collect output.
+
+    ``result`` is the accumulated decisions and tags. Every selected slot of
+    one theme carries that same result. ``slot_option_id`` is the option this
+    socket represents. It is empty when Theme Collect merged two payloads.
+    ``emitted_reason`` is ``selected``, ``passthrough_error``, or ``collected``.
+    """
+
+    result: ThemeResult
+    slot_option_id: str
+    theme_id: str
+    emitted_reason: str = "selected"
+
+
 def parse_lora_library(source: str | dict[str, Any]) -> LoraLibrary:
     return validate_lora_library(_load_object(source, "lora library"))
 
@@ -283,6 +329,53 @@ def build_theme_result(
                 seen_tags.add(tag)
                 tags.append(tag)
     return ThemeResult(decisions=copied, tags=tags, errors=list(errors or []))
+
+
+def build_settings(
+    *,
+    api_key: Any = "",
+    api_model: Any = "",
+    endpoint: Any = None,
+    noul_threshold: Any = 0.5,
+    on_error: Any = "passthrough",
+    min_confidence: Any = 0.0,
+) -> RouterSettings:
+    """Validate Settings-node fields. A blank endpoint uses the SystemOne default.
+
+    This does not call SystemOne. The key is stored on the object and is not
+    returned anywhere else.
+    """
+
+    from ..systemone.client import DEFAULT_ENDPOINT
+
+    if not isinstance(api_key, str):
+        raise SchemaError("api_key must be a string")
+    if not isinstance(api_model, str):
+        raise SchemaError("api_model must be a string")
+    if endpoint is None:
+        endpoint = DEFAULT_ENDPOINT
+    if not isinstance(endpoint, str):
+        raise SchemaError("endpoint must be a string")
+    endpoint = endpoint.strip() or DEFAULT_ENDPOINT
+    if not (endpoint.startswith("https://") or endpoint.startswith("http://")):
+        raise SchemaError("endpoint must start with http:// or https://")
+    if not isinstance(on_error, str) or on_error not in ("passthrough", "raise"):
+        raise SchemaError("on_error must be one of: passthrough, raise")
+    return RouterSettings(
+        api_key=api_key,
+        api_model=api_model,
+        endpoint=endpoint,
+        noul_threshold=_unit_interval("noul_threshold", noul_threshold),
+        on_error=on_error,
+        min_confidence=_unit_interval("min_confidence", min_confidence),
+    )
+
+
+def _unit_interval(name: str, value: Any) -> float:
+    number = _as_float(value, "settings", name)
+    if number < 0.0 or number > 1.0:
+        raise SchemaError(f"{name} must be between 0 and 1", "settings")
+    return number
 
 
 def public_decision(decision: ThemeDecision) -> dict[str, Any]:

@@ -1,11 +1,14 @@
-"""Turn pre-break theme libraries and sequences into theme documents and a plan.
+"""Offline migration. This module does not register nodes or call SystemOne.
 
-This module does not register nodes and does not call SystemOne. Runtime
-parsing rejects ``lora_bindings`` and ``fallback_option_id``. Call these
-helpers while editing JSON, then store the results on Theme nodes.
+``migrate_theme_library`` turns a pre-51f1904 theme library into theme
+documents. ``plan_sequence`` turns an old sequence into Theme Root plus
+option wires. ``migrate_router_graph`` turns a 51f1904 Theme graph
+(``run``, ``enable_json``, ``theme_result``, per-theme API widgets) into
+SystemOne Settings, Theme Root, and option-slot wires.
 
-Per-option strength overrides are dropped. LoRA Aggregate uses the library
-strengths. ``rewrite_*`` and ``disable_step`` are warnings, not behavior.
+Runtime parsing rejects ``lora_bindings`` and ``fallback_option_id``.
+Per-option strength overrides are dropped. ``rewrite_*`` and ``disable_step``
+are warnings, not behavior.
 """
 
 from __future__ import annotations
@@ -15,7 +18,35 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .theme_ids import ensure_theme_document
-from .types import SchemaError, parse_enable_rules, parse_theme
+from .types import (
+    MAX_OPTION_OUTPUTS,
+    REPORT_OUTPUT_INDEX,
+    EnableRules,
+    SchemaError,
+    parse_enable_rules,
+    parse_theme,
+)
+
+_SETTINGS_FIELDS = (
+    "api_key",
+    "api_model",
+    "endpoint",
+    "noul_threshold",
+    "on_error",
+    "min_confidence",
+)
+_REMOVED_ROUTER = [
+    "run",
+    "enable_json",
+    "theme_result",
+    "S1_THEME_RESULT",
+    "Theme api_key widget",
+    "Theme api_model widget",
+    "Theme endpoint widget",
+    "Theme noul_threshold widget",
+    "Theme on_error widget",
+    "Theme min_confidence widget",
+]
 
 _WHEN_OPS = ("eq", "neq", "includes_any", "includes_all", "skipped", "answered")
 _BARE_OPS = ("skipped", "answered")
@@ -110,13 +141,13 @@ def retag_lora_library(
 
 
 def plan_sequence(source: str | dict[str, Any]) -> dict[str, Any]:
-    """Advisory Theme-node plan for an old ``sequence_json``.
+    """Advisory plan for an old ``sequence_json``.
 
-    The plan is not executed. ``enabled_by_default: true`` with no
-    ``disable_step`` becomes ``run: enabled``. A step that starts disabled
-    becomes ``when_upstream``, and each ``enable_step`` dependency becomes a
-    clause whose ``theme_id`` is the referenced step's theme. Old ``step_id``
-    values are not enable targets.
+    The plan is not executed. A step that starts enabled and has no
+    ``disable_step`` becomes ``S1ThemeRoot``. A step that starts disabled and
+    has an ``enable_step`` action becomes ``S1Theme``, and a single option
+    clause becomes ``upstream_wire``. Old ``step_id`` values are not wire
+    targets. ``run`` and ``enable_json`` are not emitted.
     """
 
     data = _load(source, "sequence")
@@ -185,31 +216,40 @@ def plan_sequence(source: str | dict[str, Any]) -> dict[str, Any]:
                 "enabled_by_default must be a boolean",
                 f"sequence.steps[{index}]",
             )
+        rules = parse_enable_rules({"version": 1, "match": "any", "clauses": clauses})
         if enabled_default and not saw_disable:
-            run = "enabled"
+            class_type = "S1ThemeRoot"
+            dropped = False
+            upstream_wire = None
             if clauses:
                 step_warnings.append(
-                    "enabled_by_default was true, so run is enabled; "
-                    "the enable clauses are not required to turn this theme on"
+                    "enabled_by_default was true, so this node is Theme Root; "
+                    "enable clauses are not wires on a root"
                 )
-            enable_json = {"version": 1, "match": "any", "clauses": []}
         elif saw_enable:
-            run = "when_upstream"
-            enable_json = {"version": 1, "match": "any", "clauses": clauses}
+            class_type = "S1Theme"
+            dropped = False
+            upstream_wire, wire_warnings = _option_wire(rules)
+            step_warnings.extend(wire_warnings)
         else:
-            run = "disabled"
-            enable_json = {"version": 1, "match": "any", "clauses": []}
-            if not enabled_default:
+            class_type = None
+            dropped = True
+            upstream_wire = None
+            if saw_disable:
                 step_warnings.append(
-                    "the step started disabled and had no enable_step action, so run is disabled"
+                    "disable_step has no option-slot equivalent, so this node is omitted"
                 )
-        parse_enable_rules(enable_json)
+            elif not enabled_default:
+                step_warnings.append(
+                    "the step started disabled and had no enable_step action, so it is omitted"
+                )
         nodes.append(
             {
                 "step_id": step["step_id"],
                 "theme_id": step["theme_id"],
-                "run": run,
-                "enable_json": enable_json,
+                "class_type": class_type,
+                "dropped": dropped,
+                "upstream_wire": upstream_wire,
                 "warnings": step_warnings,
             }
         )
@@ -223,8 +263,416 @@ def plan_sequence(source: str | dict[str, Any]) -> dict[str, Any]:
             "fallback_option_id",
             "strength_conflict",
             "sequence_json",
+            "run",
+            "enable_json",
+            "theme_result",
+            "S1_THEME_RESULT",
         ],
     }
+
+
+def _option_wire(rules: EnableRules) -> tuple[dict[str, Any] | None, list[str]]:
+    """Map one enable-rule clause to a parent option slot.
+
+    A downstream theme has one ``upstream`` socket. Several clauses, or a
+    clause that names more than one option, cannot be one wire.
+    """
+
+    warnings: list[str] = []
+    if not rules.clauses:
+        warnings.append("no enable clause mapped to an option slot")
+        return None, warnings
+    if len(rules.clauses) != 1:
+        warnings.append(
+            "multiple enable clauses are not one upstream socket; "
+            "duplicate this theme once per option slot"
+        )
+        return None, warnings
+    clause = rules.clauses[0]
+    if clause.op in ("eq", "includes_any") and len(clause.option_ids) == 1:
+        return (
+            {
+                "theme_id": clause.theme_id,
+                "option_id": clause.option_ids[0],
+                "op": clause.op,
+            },
+            warnings,
+        )
+    if clause.op == "includes_any" and len(clause.option_ids) > 1:
+        warnings.append(
+            f"includes_any {clause.option_ids} needs one Theme copy per option; "
+            "one upstream socket cannot OR those slots"
+        )
+        return None, warnings
+    if clause.op == "includes_all":
+        warnings.append(
+            "includes_all is not one option slot; each selected slot already "
+            "carries every tag from that multi decision"
+        )
+        return None, warnings
+    warnings.append(f"op {clause.op!r} does not map to an option slot")
+    return None, warnings
+
+
+def migrate_router_graph(source: str | dict[str, Any]) -> dict[str, Any]:
+    """Plan Settings + Theme Root + option wires from a 51f1904 router.
+
+    Accepts a ComfyUI API prompt (``id -> {class_type, inputs}``) or
+    ``{"nodes": [ ... ]}`` with either that shape or flat widget fields.
+    The result is a plan. It is not a workflow you can queue unchanged:
+    positive and negative are sockets, and option links use the new indexes.
+
+    The API key is copied onto the settings node so you can paste it. It is
+    not repeated in warnings.
+    """
+
+    raw_nodes = _router_nodes(_load(source, "router graph"))
+    themes = [node for node in raw_nodes if node["class_type"] == "S1Theme"]
+    by_id = {node["id"]: node for node in raw_nodes}
+    option_index, theme_ids = _option_indexes(themes)
+    # Dropped themes (disabled, or an unknown run mode) do not need a settings node.
+    live_themes = [
+        node
+        for node in themes
+        if node["inputs"].get("run", "disabled") in ("enabled", "when_upstream")
+    ]
+    settings_nodes, settings_of = _settings_nodes(live_themes)
+    planned: list[dict[str, Any]] = []
+    dropped: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    wires: list[dict[str, Any]] = []
+
+    for node in raw_nodes:
+        kind = node["class_type"]
+        if kind == "S1Theme":
+            converted, theme_warnings, theme_wires = _convert_theme(
+                node, option_index, theme_ids, settings_of
+            )
+            warnings.extend(theme_warnings)
+            wires.extend(theme_wires)
+            if converted is None:
+                dropped.append(
+                    {
+                        "id": node["id"],
+                        "reason": theme_warnings[-1] if theme_warnings else "omitted",
+                    }
+                )
+            else:
+                planned.append(converted)
+            continue
+        if kind == "S1LoraAggregate":
+            planned.append(_convert_aggregate(node, warnings))
+            continue
+        if kind == "S1ThemeCollect":
+            planned.append(_convert_collect(node, by_id, warnings))
+            continue
+        if kind in ("S1LoraLibrary", "S1Settings", "S1ThemeRoot"):
+            planned.append(
+                {
+                    "id": node["id"],
+                    "class_type": kind,
+                    "inputs": dict(node["inputs"]),
+                }
+            )
+            continue
+        planned.append(
+            {
+                "id": node["id"],
+                "class_type": kind,
+                "inputs": dict(node["inputs"]),
+            }
+        )
+        warnings.append(f"node {node['id']!r} ({kind}) was copied unchanged")
+
+    return {
+        "settings_nodes": settings_nodes,
+        "nodes": planned,
+        "wires": wires,
+        "dropped": dropped,
+        "warnings": warnings,
+        "removed": list(_REMOVED_ROUTER),
+        "limits": {
+            "max_option_outputs": MAX_OPTION_OUTPUTS,
+            "report_output_index": REPORT_OUTPUT_INDEX,
+        },
+    }
+
+
+def _router_nodes(data: dict[str, Any]) -> list[dict[str, Any]]:
+    if isinstance(data.get("nodes"), list):
+        nodes = []
+        for index, item in enumerate(data["nodes"]):
+            if not isinstance(item, dict):
+                raise SchemaError("node must be an object", f"router graph.nodes[{index}]")
+            node_id = item.get("id", str(index))
+            if not isinstance(node_id, str) or not node_id:
+                raise SchemaError("node id must be a string", f"router graph.nodes[{index}]")
+            if isinstance(item.get("inputs"), dict) and isinstance(item.get("class_type"), str):
+                nodes.append(
+                    {
+                        "id": node_id,
+                        "class_type": item["class_type"],
+                        "inputs": dict(item["inputs"]),
+                    }
+                )
+                continue
+            class_type = item.get("class_type", "S1Theme")
+            if not isinstance(class_type, str):
+                raise SchemaError("class_type must be a string", f"router graph.nodes[{index}]")
+            inputs = {
+                key: value
+                for key, value in item.items()
+                if key not in ("id", "class_type")
+            }
+            nodes.append({"id": node_id, "class_type": class_type, "inputs": inputs})
+        return nodes
+    nodes = []
+    for node_id, item in data.items():
+        if not isinstance(item, dict) or "class_type" not in item:
+            raise SchemaError(
+                "expected a nodes list or a ComfyUI API prompt",
+                "router graph",
+            )
+        inputs = item.get("inputs", {})
+        if not isinstance(inputs, dict):
+            raise SchemaError("inputs must be an object", f"router graph.{node_id}")
+        nodes.append({"id": str(node_id), "class_type": item["class_type"], "inputs": dict(inputs)})
+    return nodes
+
+
+def _option_indexes(
+    themes: list[dict[str, Any]],
+) -> tuple[dict[str, dict[str, int]], dict[str, str]]:
+    indexes: dict[str, dict[str, int]] = {}
+    theme_ids: dict[str, str] = {}
+    for node in themes:
+        raw = node["inputs"].get("theme_json")
+        if raw is None:
+            continue
+        try:
+            theme = parse_theme(raw)
+        except SchemaError:
+            continue
+        indexes[node["id"]] = {
+            option.option_id: index for index, option in enumerate(theme.options)
+        }
+        theme_ids[node["id"]] = theme.theme_id
+    return indexes, theme_ids
+
+
+def _settings_from_inputs(inputs: dict[str, Any]) -> dict[str, Any]:
+    endpoint = inputs.get("endpoint") or "https://system-one.dev/v1/systemone"
+    return {
+        "api_key": inputs.get("api_key", "") if isinstance(inputs.get("api_key", ""), str) else "",
+        "api_model": inputs.get("api_model", "") if isinstance(inputs.get("api_model", ""), str) else "",
+        "endpoint": endpoint if isinstance(endpoint, str) else "https://system-one.dev/v1/systemone",
+        "noul_threshold": inputs.get("noul_threshold", 0.5),
+        "on_error": inputs.get("on_error", "passthrough"),
+        "min_confidence": inputs.get("min_confidence", 0.0),
+    }
+
+
+def _settings_key(settings: dict[str, Any]) -> tuple[Any, ...]:
+    return tuple(settings[field] for field in _SETTINGS_FIELDS)
+
+
+def _settings_nodes(
+    themes: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], dict[str, str]]:
+    groups: list[tuple[tuple[Any, ...], dict[str, Any], list[str]]] = []
+    for node in themes:
+        settings = _settings_from_inputs(node["inputs"])
+        key = _settings_key(settings)
+        placed = False
+        for existing in groups:
+            if existing[0] == key:
+                existing[2].append(node["id"])
+                placed = True
+                break
+        if not placed:
+            groups.append((key, settings, [node["id"]]))
+    nodes = []
+    owner: dict[str, str] = {}
+    for index, (_key, settings, members) in enumerate(groups):
+        node_id = "settings" if index == 0 else f"settings_{index + 1}"
+        nodes.append(
+            {
+                "id": node_id,
+                "class_type": "S1Settings",
+                "inputs": settings,
+                "from_nodes": members,
+            }
+        )
+        for member in members:
+            owner[member] = node_id
+    return nodes, owner
+
+
+def _link_node_id(value: Any) -> str | None:
+    if isinstance(value, str) and value:
+        return value
+    if (
+        isinstance(value, list)
+        and len(value) == 2
+        and isinstance(value[0], str)
+        and isinstance(value[1], (int, float))
+    ):
+        return value[0]
+    return None
+
+
+def _convert_theme(node, option_index, theme_ids, settings_of):
+    warnings: list[str] = []
+    wires: list[dict[str, Any]] = []
+    inputs = node["inputs"]
+    run = inputs.get("run", "disabled")
+    enable_raw = inputs.get("enable_json", {"clauses": []})
+    rules = None
+    try:
+        rules = parse_enable_rules(enable_raw if enable_raw is not None else {"clauses": []})
+    except SchemaError as exc:
+        warnings.append(f"node {node['id']!r}: enable_json was not usable ({exc})")
+    theme_inputs: dict[str, Any] = {}
+    if "positive" in inputs:
+        theme_inputs["positive"] = inputs.get("positive", "")
+    if "negative" in inputs:
+        theme_inputs["negative"] = inputs.get("negative", "")
+    # Positive is recorded before negative. Both are sockets in the new graph.
+    if "positive" not in theme_inputs:
+        theme_inputs = {"positive": "", **theme_inputs}
+    if "negative" not in theme_inputs:
+        ordered = {}
+        if "positive" in theme_inputs:
+            ordered["positive"] = theme_inputs.pop("positive")
+        ordered["negative"] = ""
+        ordered.update(theme_inputs)
+        theme_inputs = ordered
+    if "theme_json" in inputs:
+        theme_inputs["theme_json"] = inputs["theme_json"]
+    settings_id = settings_of.get(node["id"])
+    if settings_id:
+        theme_inputs["settings"] = [settings_id, 0]
+    warnings.append(
+        f"node {node['id']!r}: positive and negative are input sockets. "
+        "The plan keeps the old widget text, positive first."
+    )
+    if run == "enabled":
+        if rules is not None and rules.clauses:
+            warnings.append(
+                f"node {node['id']!r}: run was enabled, so enable_json is ignored"
+            )
+        return (
+            {
+                "id": node["id"],
+                "class_type": "S1ThemeRoot",
+                "inputs": theme_inputs,
+                "option_outputs": _option_output_list(node, option_index),
+            },
+            warnings,
+            wires,
+        )
+    if run == "disabled":
+        warnings.append(
+            f"node {node['id']!r}: run was disabled, so the node is omitted"
+        )
+        return None, warnings, wires
+    if run != "when_upstream":
+        warnings.append(f"node {node['id']!r}: run {run!r} is not a known mode, so the node is omitted")
+        return None, warnings, wires
+    upstream_wire = None
+    if rules is not None:
+        upstream_wire, wire_warnings = _option_wire(rules)
+        for item in wire_warnings:
+            warnings.append(f"node {node['id']!r}: {item}")
+    parent_id = _link_node_id(inputs.get("upstream"))
+    if upstream_wire is not None:
+        slot = _resolve_slot(parent_id, upstream_wire, option_index, theme_ids)
+        if slot is None:
+            warnings.append(
+                f"node {node['id']!r}: could not place option {upstream_wire['option_id']!r} "
+                f"on upstream {parent_id!r}. Wire upstream by hand."
+            )
+        else:
+            theme_inputs["upstream"] = [parent_id, slot]
+            wires.append(
+                {
+                    "from": parent_id,
+                    "option_id": upstream_wire["option_id"],
+                    "output_index": slot,
+                    "to": node["id"],
+                    "input": "upstream",
+                }
+            )
+    elif parent_id:
+        warnings.append(
+            f"node {node['id']!r}: upstream link {inputs.get('upstream')!r} "
+            "was theme_result. Pick the parent option slot yourself."
+        )
+    return (
+        {
+            "id": node["id"],
+            "class_type": "S1Theme",
+            "inputs": theme_inputs,
+            "upstream_wire": upstream_wire,
+            "option_outputs": _option_output_list(node, option_index),
+        },
+        warnings,
+        wires,
+    )
+
+
+def _option_output_list(node, option_index) -> list[dict[str, Any]]:
+    slots = option_index.get(node["id"])
+    if not slots:
+        return []
+    listed = []
+    for option_id, index in slots.items():
+        if option_id == "__theme_id__" or not isinstance(index, int):
+            continue
+        listed.append({"option_id": option_id, "index": index})
+    listed.sort(key=lambda item: item["index"])
+    return listed
+
+
+def _resolve_slot(parent_id, wire, option_index, theme_ids) -> int | None:
+    if not parent_id or parent_id not in option_index:
+        return None
+    parent_theme = theme_ids.get(parent_id)
+    if parent_theme and parent_theme != wire["theme_id"]:
+        return None
+    index = option_index[parent_id].get(wire["option_id"])
+    if isinstance(index, int):
+        return index
+    return None
+
+
+def _convert_aggregate(node, warnings: list[str]) -> dict[str, Any]:
+    inputs = dict(node["inputs"])
+    old = inputs.pop("theme_result", None)
+    if old is not None:
+        warnings.append(
+            f"node {node['id']!r}: LoRA Aggregate input theme_result ({old!r}) was removed. "
+            "Connect decision to the option slot whose tags should be applied. "
+            "Output 0 is no longer the whole theme result."
+        )
+    inputs.pop("enable_json", None)
+    inputs.pop("run", None)
+    return {"id": node["id"], "class_type": "S1LoraAggregate", "inputs": inputs}
+
+
+def _convert_collect(node, by_id, warnings: list[str]) -> dict[str, Any]:
+    inputs = dict(node["inputs"])
+    for name in ("a", "b"):
+        link = inputs.get(name)
+        parent_id = _link_node_id(link)
+        parent = by_id.get(parent_id) if parent_id else None
+        if parent and parent["class_type"] == "S1Theme":
+            warnings.append(
+                f"node {node['id']!r}: input {name} linked to {link!r}, which was theme_result. "
+                "Retarget it to the option slot that should merge."
+            )
+            inputs[name] = None
+    return {"id": node["id"], "class_type": "S1ThemeCollect", "inputs": inputs}
 
 
 def _migrate_theme(data: Any, path: str) -> MigratedTheme:
@@ -346,6 +794,7 @@ def _load(source: str | dict[str, Any], label: str) -> dict[str, Any]:
 
 __all__ = [
     "MigratedTheme",
+    "migrate_router_graph",
     "migrate_theme_document",
     "migrate_theme_library",
     "plan_sequence",

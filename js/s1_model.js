@@ -1,5 +1,7 @@
-// Editor model for a LoRA library, one theme, and enable rules.
+// Editor model for a LoRA library and one theme.
 // Field rules match schema/types.py. This file does not import ComfyUI.
+// Enable documents still parse here so old JSON can be recognized. The modal
+// does not edit them. Option slots are planned here and applied by the editor.
 
 export const SELECT_MODES = ["single", "multi"];
 export const RUN_MODES = ["disabled", "enabled", "when_upstream"];
@@ -436,7 +438,7 @@ export function planThemeIds(entries) {
       keys: keys.slice(),
       reason:
         `Restored nodes share theme_id ${JSON.stringify(themeId)} (${labels.join(", ")}). ` +
-        "Their theme JSON and enable rules were left unchanged so a saved enable rule is not retargeted.",
+        "Their theme JSON was left unchanged. A decision chain still rejects a repeated theme_id.",
     });
   }
 
@@ -484,6 +486,198 @@ export function planThemeIds(entries) {
     if (!decision.changed) unchanged.push(row.key);
   }
   return { assignments, conflicts, unchanged };
+}
+
+export const MAX_OPTION_OUTPUTS = 32;
+export const DECISION_TYPE = "S1_DECISION";
+export const REPORT_OUTPUT_INDEX = MAX_OPTION_OUTPUTS;
+
+/** Visible slot label. A label and an id become "label (id)". */
+export function optionOutputName(option) {
+  const id = option && option.option_id != null ? String(option.option_id) : "";
+  const label = option && option.label != null ? String(option.label).trim() : "";
+  if (label && id) return `${label} (${id})`;
+  return id || label;
+}
+
+/**
+ * Plan the 32 option sockets for one theme document.
+ * Invalid JSON returns ok:false and slots:null. The caller leaves outputs alone.
+ */
+export function planOptionOutputs(themeJson) {
+  const text = typeof themeJson === "string" ? themeJson : JSON.stringify(themeJson ?? null);
+  const parsed = parseEditorDocument("theme", text);
+  if (!parsed.ok) return { ok: false, error: parsed.error, slots: null };
+  const options = parsed.model.options || [];
+  if (options.length > MAX_OPTION_OUTPUTS) {
+    return {
+      ok: false,
+      error: `This theme has ${options.length} options. Option outputs are capped at ${MAX_OPTION_OUTPUTS}.`,
+      slots: null,
+    };
+  }
+  const slots = [];
+  for (let index = 0; index < MAX_OPTION_OUTPUTS; index += 1) {
+    if (index < options.length) {
+      const option = options[index];
+      slots.push({
+        index,
+        option_id: String(option.option_id || ""),
+        name: optionOutputName(option),
+        type: DECISION_TYPE,
+        hidden: false,
+      });
+    } else {
+      slots.push({ index, option_id: "", name: "", type: DECISION_TYPE, hidden: true });
+    }
+  }
+  return { ok: true, slots, reportIndex: REPORT_OUTPUT_INDEX };
+}
+
+function linkParts(link) {
+  if (Array.isArray(link)) {
+    return {
+      id: link[0],
+      originId: link[1],
+      originSlot: link[2],
+      targetId: link[3],
+      targetSlot: link[4],
+    };
+  }
+  if (link && typeof link === "object") {
+    return {
+      id: link.id,
+      originId: link.origin_id,
+      originSlot: link.origin_slot,
+      targetId: link.target_id,
+      targetSlot: link.target_slot,
+    };
+  }
+  return null;
+}
+
+function writeOriginSlot(link, slot) {
+  if (Array.isArray(link)) link[2] = slot;
+  else if (link && typeof link === "object") link.origin_slot = slot;
+}
+
+function eachGraphLink(graph, visit) {
+  const links = graph?.links;
+  if (!links) return;
+  if (Array.isArray(links)) {
+    for (let index = 0; index < links.length; index += 1) {
+      if (links[index]) visit(links[index], index, "array");
+    }
+    return;
+  }
+  for (const key of Object.keys(links)) {
+    if (links[key]) visit(links[key], key, "map");
+  }
+}
+
+function nodeById(graph, id) {
+  if (typeof graph?.getNodeById === "function") return graph.getNodeById(id);
+  const nodes = graph?._nodes || graph?.nodes || [];
+  return nodes.find((node) => node && node.id === id) || null;
+}
+
+function dropGraphLink(graph, link, key, kind) {
+  if (!graph?.links) return;
+  const parts = linkParts(link);
+  if (kind === "array") graph.links[key] = null;
+  else delete graph.links[key];
+  if (!parts) return;
+  const target = nodeById(graph, parts.targetId);
+  const input = target?.inputs?.[parts.targetSlot];
+  if (!input) return;
+  if (input.link === parts.id) input.link = null;
+  if (Array.isArray(input.links)) input.links = input.links.filter((item) => item !== parts.id);
+}
+
+function ensureOutput(outputs, index, type) {
+  while (outputs.length <= index) outputs.push(null);
+  if (!outputs[index] || typeof outputs[index] !== "object") {
+    outputs[index] = { name: "", type, links: null };
+  }
+  return outputs[index];
+}
+
+/**
+ * Rename option sockets and retarget wires by option id.
+ *
+ * The first sync (no output has s1OptionId) stamps ids by index and does not
+ * move links. A later sync moves graph.links origin_slot to the option's new
+ * index and drops a link whose option disappeared. Links on the report socket
+ * (index 32) stay put. A report_json name alone does not count as a prior sync.
+ */
+export function relinkOptionSlots(node, slots) {
+  if (!node || !Array.isArray(slots) || slots.length < MAX_OPTION_OUTPUTS) {
+    return { ok: false, first: true, moved: 0, dropped: 0 };
+  }
+  if (!Array.isArray(node.outputs)) node.outputs = [];
+  const outputs = node.outputs;
+  const first = !outputs.some(
+    (output, index) => index < MAX_OPTION_OUTPUTS && output && output.s1OptionId,
+  );
+  const previous = [];
+  for (let index = 0; index < MAX_OPTION_OUTPUTS; index += 1) {
+    const stamped = outputs[index]?.s1OptionId;
+    previous.push(stamped ? String(stamped) : "");
+  }
+  let moved = 0;
+  let dropped = 0;
+  if (!first && node.graph) {
+    const nextIndex = new Map();
+    slots.forEach((slot, index) => {
+      if (slot?.option_id && !slot.hidden) nextIndex.set(String(slot.option_id), index);
+    });
+    const pending = [];
+    eachGraphLink(node.graph, (link, key, kind) => {
+      const parts = linkParts(link);
+      if (!parts || parts.originId !== node.id) return;
+      if (typeof parts.originSlot !== "number" || parts.originSlot >= REPORT_OUTPUT_INDEX) return;
+      const optionId = previous[parts.originSlot] || "";
+      if (!optionId) return;
+      pending.push({
+        link,
+        key,
+        kind,
+        id: parts.id,
+        from: parts.originSlot,
+        to: nextIndex.has(optionId) ? nextIndex.get(optionId) : -1,
+      });
+    });
+    for (const item of pending) {
+      const fromOutput = outputs[item.from];
+      if (fromOutput && Array.isArray(fromOutput.links)) {
+        fromOutput.links = fromOutput.links.filter((id) => id !== item.id);
+      }
+      if (item.to < 0) {
+        dropGraphLink(node.graph, item.link, item.key, item.kind);
+        dropped += 1;
+        continue;
+      }
+      writeOriginSlot(item.link, item.to);
+      const dest = ensureOutput(outputs, item.to, DECISION_TYPE);
+      if (!Array.isArray(dest.links)) dest.links = dest.links == null ? [] : [dest.links];
+      if (!dest.links.includes(item.id)) dest.links.push(item.id);
+      if (item.from !== item.to) moved += 1;
+    }
+  }
+  for (let index = 0; index < MAX_OPTION_OUTPUTS; index += 1) {
+    const slot = slots[index];
+    const output = ensureOutput(outputs, index, DECISION_TYPE);
+    output.name = slot.hidden ? "" : slot.name;
+    output.label = output.name;
+    output.type = DECISION_TYPE;
+    output.hidden = Boolean(slot.hidden);
+    output.s1OptionId = slot.option_id || "";
+  }
+  const report = ensureOutput(outputs, REPORT_OUTPUT_INDEX, "STRING");
+  if (!report.name) report.name = "report_json";
+  if (!report.type || report.type === DECISION_TYPE) report.type = "STRING";
+  report.hidden = false;
+  return { ok: true, first, moved, dropped };
 }
 
 export function fieldPathsFromError(message) {

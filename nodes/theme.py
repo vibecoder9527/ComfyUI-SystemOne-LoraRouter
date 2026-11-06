@@ -1,35 +1,132 @@
-"""One Theme node: SystemOne decision, tags, and an upstream enable chain."""
+"""Theme Root and Theme. Each option is an output slot.
+
+Theme Root always decides. A downstream Theme decides when its ``upstream``
+input is a real ``S1_DECISION``. An unselected parent slot is an
+``ExecutionBlocker``, and ComfyUI does not run the nodes wired only to it.
+
+Outputs are ``MAX_OPTION_OUTPUTS`` sockets of type ``S1_DECISION`` plus
+``report_json`` at the last index. Slot ``i`` is ``theme.options[i]``. Slots
+past the option list are blockers. The frontend renames and hides them.
+"""
 
 from __future__ import annotations
 
-from ..schema.types import EMPTY_ENABLE_JSON, EMPTY_THEME_JSON
-from ..systemone.client import DEFAULT_ENDPOINT
-from ..theme_engine import dump_report, run_theme
+from ..schema.blocker import execution_blocker, is_execution_blocker
+from ..schema.types import (
+    MAX_OPTION_OUTPUTS,
+    REPORT_OUTPUT_INDEX,
+    DecisionPayload,
+    RouterSettings,
+    SchemaError,
+    parse_theme,
+)
+from ..theme_engine import dump_report, option_slot_values, run_theme
 
 CATEGORY = "SystemOne/LoraRouter"
 
+_OPTION_TYPES = ("S1_DECISION",) * MAX_OPTION_OUTPUTS + ("STRING",)
+_OPTION_NAMES = tuple(f"option_{index + 1}" for index in range(MAX_OPTION_OUTPUTS)) + (
+    "report_json",
+)
+_OPTION_TOOLTIPS = tuple(
+    f"Option slot {index + 1}. Carries accumulated tags when that option is selected. "
+    "An unselected slot is an ExecutionBlocker and does not run downstream nodes."
+    for index in range(MAX_OPTION_OUTPUTS)
+) + (
+    "Compact JSON for this decision. It does not contain the API key. "
+    f"This socket stays at output index {REPORT_OUTPUT_INDEX}.",
+)
 
-class S1Theme:
-    """Ask SystemOne about one theme, or skip it when it is not enabled."""
+
+def _blocked_outputs(note: str) -> tuple:
+    report = {
+        "role": "downstream",
+        "status": "blocked",
+        "enabled": False,
+        "selected": [],
+        "tags": [],
+        "decisions": [],
+        "accumulated_tags": [],
+        "errors": [],
+        "slots": [],
+        "api": {
+            "called": False,
+            "endpoint": "",
+            "model": "",
+            "key_source": "missing",
+            "stub": False,
+        },
+        "notes": [note],
+    }
+    blocked = tuple(execution_blocker(None) for _ in range(MAX_OPTION_OUTPUTS))
+    return blocked + (dump_report(report),)
+
+
+def _pack(theme, outcome) -> tuple:
+    if not theme.options and outcome.result.errors:
+        outcome.report.setdefault("notes", []).append(
+            "This theme has no option slots, so nothing downstream of this node runs."
+        )
+    values = option_slot_values(theme, outcome.result)
+    own = outcome.result.get(theme.theme_id)
+    if theme.options and outcome.report.get("status") == "ok" and own is not None and not own.selected:
+        outcome.report.setdefault("notes", []).append(
+            "No option was selected, so every option slot is blocked. "
+            "Upstream tags stay on this result but are not emitted on a slot."
+        )
+    emitted = []
+    for option, value in zip(theme.options, values):
+        if is_execution_blocker(value):
+            kind = "blocked"
+        else:
+            kind = value.emitted_reason
+        emitted.append({"option_id": option.option_id, "emitted": kind})
+    outcome.report["slots"] = emitted
+    padded = list(values) + [execution_blocker(None)] * (MAX_OPTION_OUTPUTS - len(values))
+    return tuple(padded) + (dump_report(outcome.report),)
+
+
+class _ThemeOutputs:
+    """Shared outputs. Subclasses supply inputs and ``decide``."""
 
     CATEGORY = CATEGORY
     FUNCTION = "decide"
-    RETURN_TYPES = ("S1_THEME_RESULT", "STRING")
-    RETURN_NAMES = ("theme_result", "report_json")
-    OUTPUT_TOOLTIPS = (
-        "Accumulated decisions and tags. Wire this into another Theme's upstream or into LoRA Aggregate.",
-        "Compact JSON for this decision and the upstream chain. It does not contain the API key.",
-    )
+    RETURN_TYPES = _OPTION_TYPES
+    RETURN_NAMES = _OPTION_NAMES
+    OUTPUT_TOOLTIPS = _OPTION_TOOLTIPS
+
+    def _run(self, positive, negative, settings, theme_json, upstream_result, role):
+        if not isinstance(settings, RouterSettings):
+            raise SchemaError("settings must be an S1_SETTINGS from SystemOne Settings")
+        theme = parse_theme(theme_json)
+        if len(theme.options) > MAX_OPTION_OUTPUTS:
+            raise SchemaError(
+                f"theme {theme.theme_id!r} has {len(theme.options)} options; "
+                f"option outputs are capped at {MAX_OPTION_OUTPUTS}"
+            )
+        outcome = run_theme(
+            theme_json=theme_json,
+            positive=positive,
+            negative=negative or "",
+            settings=settings,
+            upstream=upstream_result,
+            role=role,
+        )
+        return _pack(theme, outcome)
+
+
+class S1ThemeRoot(_ThemeOutputs):
+    """Always decide. Wire one option slot into a child Theme or into Aggregate."""
+
     DESCRIPTION = (
-        "One theme. Options contribute tags; they do not store LoRA bindings. "
-        "run=disabled (the default) does not call SystemOne and adds no tags. "
-        "run=enabled is an explicit root. run=when_upstream turns the theme on "
-        "only when enable_json matches selected options on the upstream result. "
-        "single is a SystemOne choice; multi is one noul per option. "
-        "The API key is the api_key widget, otherwise SYSTEM_ONE_API_KEY. "
-        "on_error=passthrough records the failure and keeps upstream tags. "
-        "Open visual editor opens a modal that edits theme_json, enable_json, "
-        "and the positive and negative prompts."
+        "Root theme. It always asks SystemOne when the theme has a decision to make. "
+        "Positive is the input above negative. Both are sockets, not body text. "
+        "Settings comes from SystemOne Settings. There is no run switch, no enable_json, "
+        "and no API widgets on this node. "
+        "Each option in theme_json is an output slot, in that order. "
+        "The selected slot carries accumulated tags. Unselected slots are ExecutionBlockers. "
+        "none_option_id contributes no tags when it is chosen, and its slot still emits. "
+        "Open visual editor edits theme_json only. Invalid drafts are not written."
     )
 
     @classmethod
@@ -39,140 +136,127 @@ class S1Theme:
                 "positive": (
                     "STRING",
                     {
-                        "multiline": True,
-                        "default": "",
-                        "tooltip": "Positive prompt. Sent as state.positive.",
+                        "forceInput": True,
+                        "tooltip": "Positive prompt. The input above negative. Sent as state.positive.",
                     },
                 ),
                 "negative": (
                     "STRING",
                     {
-                        "multiline": True,
-                        "default": "",
-                        "tooltip": "Negative prompt, directly under positive. Sent as state.negative.",
+                        "forceInput": True,
+                        "tooltip": "Negative prompt, below positive. Sent as state.negative. Blank is empty.",
+                    },
+                ),
+                "settings": (
+                    "S1_SETTINGS",
+                    {
+                        "forceInput": True,
+                        "tooltip": "SystemOne Settings. API key, endpoint, and on_error live there.",
                     },
                 ),
                 "theme_json": (
                     "STRING",
                     {
                         "multiline": True,
-                        "default": EMPTY_THEME_JSON,
+                        "default": _empty_theme(),
                         "dynamicPrompts": False,
                         "tooltip": (
                             "One theme: theme_id, title, instructions, select_mode, "
-                            "options with tags, optional none_option_id."
+                            "options with tags, optional none_option_id. "
+                            "Option order is output-slot order. Prompts are not stored here."
                         ),
                     },
                 ),
-                "run": (
-                    ["disabled", "enabled", "when_upstream"],
+            }
+        }
+
+    def decide(self, positive, negative, settings, theme_json):
+        return self._run(positive, negative, settings, theme_json, None, "root")
+
+
+class S1Theme(_ThemeOutputs):
+    """Decide because a parent option slot fired. That wire replaces enable_json."""
+
+    DESCRIPTION = (
+        "Downstream theme. It runs when upstream is an S1_DECISION from a parent "
+        "option slot or from Theme Collect. An ExecutionBlocker upstream does not "
+        "call SystemOne and blocks every output of this node. "
+        "Positive is the input above negative. Settings comes from SystemOne Settings. "
+        "There is no run switch, no enable_json, and no API widgets. "
+        "Option slots follow theme_json order. "
+        "Open visual editor edits theme_json only."
+    )
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "positive": (
+                    "STRING",
                     {
-                        "default": "disabled",
+                        "forceInput": True,
+                        "tooltip": "Positive prompt. The input above negative. Not copied from the parent theme.",
+                    },
+                ),
+                "negative": (
+                    "STRING",
+                    {
+                        "forceInput": True,
+                        "tooltip": "Negative prompt, below positive. Blank is sent as empty.",
+                    },
+                ),
+                "settings": (
+                    "S1_SETTINGS",
+                    {
+                        "forceInput": True,
+                        "tooltip": "SystemOne Settings. Share the root's settings node or use another.",
+                    },
+                ),
+                "upstream": (
+                    "S1_DECISION",
+                    {
+                        "forceInput": True,
                         "tooltip": (
-                            "disabled: no API call. enabled: always decide. "
-                            "when_upstream: decide only when enable_json matches."
+                            "A parent option slot, or Theme Collect. "
+                            "Wiring this input is what used to be enable_json."
                         ),
                     },
                 ),
-                "enable_json": (
+                "theme_json": (
                     "STRING",
                     {
                         "multiline": True,
-                        "default": EMPTY_ENABLE_JSON,
+                        "default": _empty_theme(),
                         "dynamicPrompts": False,
                         "tooltip": (
-                            "Clauses target an upstream theme_id and option ids. "
-                            "Used only when run is when_upstream. An empty clause list matches nothing."
+                            "One theme. Option order is output-slot order. "
+                            "Prompts are not stored in this JSON."
                         ),
                     },
                 ),
-                "api_key": (
-                    "STRING",
-                    {
-                        "default": "",
-                        "multiline": False,
-                        "dynamicPrompts": False,
-                        "tooltip": (
-                            "SystemOne bearer token. A non-empty widget wins over "
-                            "SYSTEM_ONE_API_KEY. Ignored when this theme does not call the API."
-                        ),
-                    },
-                ),
-                "api_model": (
-                    "STRING",
-                    {
-                        "default": "",
-                        "multiline": False,
-                        "dynamicPrompts": False,
-                        "tooltip": 'SystemOne model name. Blank becomes "unspecified".',
-                    },
-                ),
-            },
-            "optional": {
-                "upstream": (
-                    "S1_THEME_RESULT",
-                    {
-                        "forceInput": True,
-                        "tooltip": "Accumulated result from an upstream Theme or Theme Collect.",
-                    },
-                ),
-                "endpoint": (
-                    "STRING",
-                    {
-                        "default": DEFAULT_ENDPOINT,
-                        "multiline": False,
-                        "dynamicPrompts": False,
-                        "tooltip": "SystemOne POST URL.",
-                    },
-                ),
-                "noul_threshold": (
-                    "FLOAT",
-                    {"default": 0.5, "min": 0.0, "max": 1.0, "step": 0.01},
-                ),
-                "on_error": (["passthrough", "raise"], {"default": "passthrough"}),
-                "min_confidence": (
-                    "FLOAT",
-                    {
-                        "default": 0.0,
-                        "min": 0.0,
-                        "max": 1.0,
-                        "step": 0.01,
-                        "tooltip": (
-                            "When a choice confidence is below this, the choice is kept. "
-                            "An invalid choice fails. There is no fallback option."
-                        ),
-                    },
-                ),
-            },
+            }
         }
 
-    def decide(
-        self,
-        positive,
-        negative,
-        theme_json,
-        run,
-        enable_json,
-        api_key,
-        api_model,
-        upstream=None,
-        endpoint=DEFAULT_ENDPOINT,
-        noul_threshold=0.5,
-        on_error="passthrough",
-        min_confidence=0.0,
-    ):
-        outcome = run_theme(
-            theme_json=theme_json,
-            positive=positive,
-            negative=negative or "",
-            run=run,
-            enable_json=enable_json,
-            upstream=upstream,
-            api_key=api_key,
-            api_model=api_model,
-            endpoint=endpoint,
-            noul_threshold=noul_threshold,
-            on_error=on_error,
-            min_confidence=min_confidence,
+    def decide(self, positive, negative, settings, theme_json, upstream):
+        if is_execution_blocker(upstream):
+            return _blocked_outputs(
+                "Upstream option slot did not run. SystemOne was not called and this theme added no tags."
+            )
+        if not isinstance(upstream, DecisionPayload):
+            raise SchemaError(
+                "upstream must be an S1_DECISION from a parent option slot or Theme Collect"
+            )
+        return self._run(
+            positive,
+            negative,
+            settings,
+            theme_json,
+            upstream.result,
+            "downstream",
         )
-        return (outcome.result, dump_report(outcome.report))
+
+
+def _empty_theme() -> str:
+    from ..schema.types import EMPTY_THEME_JSON
+
+    return EMPTY_THEME_JSON

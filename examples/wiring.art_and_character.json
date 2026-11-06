@@ -1,0 +1,65 @@
+{
+  "description": "Positive is the input above negative. SystemOne Settings feeds Theme Root and the child Theme. The root anime option slot feeds the child Theme upstream. A child option slot feeds LoRA Aggregate decision.",
+  "nodes": [
+    {
+      "id": "settings",
+      "class_type": "S1Settings",
+      "display": "SystemOne Settings",
+      "inputs": {
+        "api_key": "",
+        "api_model": "",
+        "endpoint": "https://system-one.dev/v1/systemone",
+        "noul_threshold": 0.5,
+        "on_error": "passthrough",
+        "min_confidence": 0.0
+      }
+    },
+    {
+      "id": "library",
+      "class_type": "S1LoraLibrary",
+      "display": "LoRA Library",
+      "inputs": {
+        "library_json": "examples/lora_library.minimal.json"
+      }
+    },
+    {
+      "id": "root",
+      "class_type": "S1ThemeRoot",
+      "display": "Theme Root",
+      "inputs": {
+        "positive": "anime girl",
+        "negative": "blurry",
+        "settings": ["settings", 0],
+        "theme_json": "examples/theme.art_style.json"
+      }
+    },
+    {
+      "id": "cast",
+      "class_type": "S1Theme",
+      "display": "Theme",
+      "inputs": {
+        "positive": "character prompt",
+        "negative": "",
+        "settings": ["settings", 0],
+        "upstream": ["root", 0],
+        "theme_json": "examples/theme.character_pack.json"
+      }
+    },
+    {
+      "id": "aggregate",
+      "class_type": "S1LoraAggregate",
+      "display": "LoRA Aggregate",
+      "inputs": {
+        "model": ["checkpoint", 0],
+        "lora_lib": ["library", 0],
+        "decision": ["cast", 0]
+      }
+    }
+  ],
+  "notes": [
+    "root output 0 is option anime when theme.art_style.json is loaded. realistic is output 1. none is output 2. Unselected slots are ExecutionBlockers.",
+    "none_option_id contributes no tags when it is chosen. Its slot still emits.",
+    "report_json stays at output index 32. Do not wire it into upstream or decision.",
+    "Positive is the input above negative on Theme Root and on Theme. Prompts are not stored in theme_json."
+  ]
+}

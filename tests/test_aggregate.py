@@ -11,6 +11,7 @@ from tests.harness import (
     CountingClient,
     FixedChoiceClient,
     ScoreClient,
+    as_payload,
     lora_entries,
     option,
     read_example,
@@ -20,19 +21,23 @@ from tests.harness import (
 
 
 def _chain(choice="anime", scores=None):
+    """Art-style root, then the character theme only when anime was selected.
+
+    That is the option-slot wire: the character node is not called for any
+    other slot.
+    """
+
     root = run_theme(
         theme_json=read_example("theme.art_style.json"),
-        run="enabled",
         client=FixedChoiceClient(choice),
     )
-    child = run_theme(
+    if choice != "anime":
+        return root
+    return run_theme(
         theme_json=read_example("theme.character_pack.json"),
-        run="when_upstream",
-        enable_json=read_example("enable.when_anime.json"),
         upstream=root.result,
         client=ScoreClient({"waifu_a": 1, "waifu_b": 1} if scores is None else scores),
     )
-    return child
 
 
 class AggregateTests(unittest.TestCase):
@@ -46,7 +51,7 @@ class AggregateTests(unittest.TestCase):
             model=model,
             clip=clip,
             lora_lib=library,
-            theme_result=result,
+            decision=as_payload(result),
         )
         self.assertIs(outcome.model, model)
         self.assertIs(outcome.clip, clip)
@@ -92,14 +97,14 @@ class AggregateTests(unittest.TestCase):
             theme_json=read_example("theme.art_style.json"),
             client=FixedChoiceClient("none"),
         )
-        none_out = AGG.aggregate_loras(model=object(), clip=None, lora_lib=library, theme_result=none.result)
+        none_out = AGG.aggregate_loras(model=object(), clip=None, lora_lib=library, decision=as_payload(none.result))
         self.assertEqual(none_out.report["matched"], [])
         self.assertEqual(none_out.report["applied"], [])
         self.assertIsNone(none_out.clip)
         self.assertTrue(any("No LoRAs were selected" in note for note in none_out.report["notes"]))
 
         real = _chain("realistic", scores={"waifu_a": 1, "waifu_b": 1})
-        real_out = AGG.aggregate_loras(model=object(), clip=None, lora_lib=library, theme_result=real.result)
+        real_out = AGG.aggregate_loras(model=object(), clip=None, lora_lib=library, decision=as_payload(real.result))
         self.assertEqual([item["lora_id"] for item in real_out.report["matched"]], ["style_realistic"])
         self.assertEqual(real_out.report["matched"][0]["strength_model"], 0.7)
 
@@ -128,7 +133,7 @@ class AggregateTests(unittest.TestCase):
             model=object(),
             clip=None,
             lora_lib=disabled,
-            theme_result=_chain().result,
+            decision=as_payload(_chain().result),
         )
         self.assertEqual([item["lora_id"] for item in out.report["matched"]], ["char_a"])
         self.assertEqual(out.report["skipped"], [{"lora_id": "style_anime_v3", "reason": "enabled_default is false"}])
@@ -152,7 +157,7 @@ class AggregateTests(unittest.TestCase):
             },
             {"lora_id": "a_other", "tags": ["missing"]},
         )
-        out = AGG.aggregate_loras(model=object(), clip=None, lora_lib=library, theme_result=second.result)
+        out = AGG.aggregate_loras(model=object(), clip=None, lora_lib=library, decision=as_payload(second.result))
         self.assertEqual([item["lora_id"] for item in out.report["matched"]], ["z_style"])
         matched = out.report["matched"][0]
         self.assertEqual(matched["strength_model"], 0.85)
@@ -259,16 +264,16 @@ class AggregateTests(unittest.TestCase):
             client=FixedChoiceClient("nope"),
         ).result
         library = TYPES.parse_lora_library(read_example("lora_library.minimal.json"))
-        out = AGG.aggregate_loras(model=object(), clip=None, lora_lib=library, theme_result=failed)
+        out = AGG.aggregate_loras(model=object(), clip=None, lora_lib=library, decision=as_payload(failed))
         self.assertEqual([item["lora_id"] for item in out.report["matched"]], ["style_anime_v3"])
         self.assertTrue(out.report["errors"])
-        self.assertTrue(any("Theme result already recorded errors" in note for note in out.report["notes"]))
+        self.assertTrue(any("already recorded theme errors" in note for note in out.report["notes"]))
 
     def test_bad_wire_and_missing_file_follow_on_error(self):
         model = object()
         clip = object()
         with self.assertRaises(TYPES.SchemaError):
-            AGG.aggregate_loras(model=model, clip=clip, lora_lib=object(), theme_result=object(), on_error="raise")
+            AGG.aggregate_loras(model=model, clip=clip, lora_lib=object(), decision=object(), on_error="raise")
         library = lora_entries({"lora_id": "L", "name": "missing.safetensors", "tags": ["only_tag"]})
         result = run_theme(
             theme_json=theme_doc(options=[option("only", ["only_tag"])]),
@@ -291,14 +296,14 @@ class AggregateTests(unittest.TestCase):
         APPLY._import_comfy = missing_api
         try:
             passed = AGG.aggregate_loras(
-                model=model, clip=None, lora_lib=library, theme_result=result, on_error="passthrough"
+                model=model, clip=None, lora_lib=library, decision=as_payload(result), on_error="passthrough",
             )
             self.assertIs(passed.model, model)
             self.assertFalse(passed.report["applied"][0]["loaded"])
             self.assertIn("missing.safetensors", passed.report["errors"][0])
             with self.assertRaises(APPLY.ApplyError):
                 AGG.aggregate_loras(
-                    model=model, clip=None, lora_lib=library, theme_result=result, on_error="raise"
+                    model=model, clip=None, lora_lib=library, decision=as_payload(result), on_error="raise",
                 )
         finally:
             APPLY._import_comfy = original
@@ -336,7 +341,7 @@ class AggregateTests(unittest.TestCase):
         APPLY._import_comfy = present_api
         model = object()
         try:
-            outcome = AGG.aggregate_loras(model=model, clip=None, lora_lib=library, theme_result=result)
+            outcome = AGG.aggregate_loras(model=model, clip=None, lora_lib=library, decision=as_payload(result))
         finally:
             APPLY._import_comfy = original
         self.assertIs(outcome.model, new_models[1])

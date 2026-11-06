@@ -199,16 +199,79 @@ def canned_urlopen(req, timeout=None):
     )
 
 
-def run_theme(**kwargs):
-    params = {
-        "theme_json": theme_doc(options=[option("a", ["tag"])]),
-        "positive": "p",
-        "negative": "",
-        "run": "enabled",
-        "enable_json": enable_doc(),
+def make_settings(**overrides):
+    fields = {
         "api_key": "k",
+        "api_model": "",
+        "endpoint": CLIENT.DEFAULT_ENDPOINT,
+        "noul_threshold": 0.5,
+        "on_error": "passthrough",
+        "min_confidence": 0.0,
     }
-    params.update(kwargs)
-    if "client" not in params:
-        params["client"] = CountingClient()
-    return ENGINE.run_theme(**params)
+    fields.update(overrides)
+    return TYPES.build_settings(**fields)
+
+
+def as_payload(result, slot_option_id=None, emitted_reason="selected"):
+    """Wrap a ThemeResult the way a selected option slot does."""
+
+    theme_id = ""
+    if slot_option_id is None:
+        slot_option_id = ""
+        for decision in reversed(result.decisions):
+            theme_id = decision.theme_id
+            if decision.selected:
+                slot_option_id = decision.selected[0]
+                break
+    elif result.decisions:
+        theme_id = result.decisions[-1].theme_id
+    return TYPES.DecisionPayload(
+        result=result,
+        slot_option_id=slot_option_id or "",
+        theme_id=theme_id,
+        emitted_reason=emitted_reason,
+    )
+
+
+def run_theme(**kwargs):
+    if "run" in kwargs or "enable_json" in kwargs:
+        raise AssertionError("run_theme no longer accepts run or enable_json")
+    client = kwargs.pop("client", None)
+    if client is None:
+        client = CountingClient()
+    settings = kwargs.pop("settings", None)
+    if settings is None:
+        settings = make_settings(
+            api_key=kwargs.pop("api_key", "k"),
+            api_model=kwargs.pop("api_model", ""),
+            endpoint=kwargs.pop("endpoint", CLIENT.DEFAULT_ENDPOINT),
+            noul_threshold=kwargs.pop("noul_threshold", 0.5),
+            on_error=kwargs.pop("on_error", "passthrough"),
+            min_confidence=kwargs.pop("min_confidence", 0.0),
+        )
+    else:
+        for key in (
+            "api_key",
+            "api_model",
+            "endpoint",
+            "noul_threshold",
+            "on_error",
+            "min_confidence",
+        ):
+            kwargs.pop(key, None)
+    theme_json = kwargs.pop("theme_json", theme_doc(options=[option("a", ["tag"])]))
+    positive = kwargs.pop("positive", "p")
+    negative = kwargs.pop("negative", "")
+    upstream = kwargs.pop("upstream", None)
+    role = kwargs.pop("role", "downstream" if upstream is not None else "root")
+    if kwargs:
+        raise AssertionError(f"unexpected run_theme arguments: {sorted(kwargs)}")
+    return ENGINE.run_theme(
+        theme_json=theme_json,
+        positive=positive,
+        negative=negative,
+        settings=settings,
+        upstream=upstream,
+        role=role,
+        client=client,
+    )

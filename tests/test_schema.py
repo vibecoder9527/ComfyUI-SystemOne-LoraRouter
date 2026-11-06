@@ -39,14 +39,18 @@ class SchemaTests(unittest.TestCase):
         self.assertEqual(pack.options[0].tags, ["char_a"])
         self.assertEqual(pack.options[1].tags, ["char_b"])
         TYPES.parse_theme(read_example("theme.empty.json"))
-        TYPES.parse_enable_rules(read_example("enable.empty.json"))
-        anime = TYPES.parse_enable_rules(read_example("enable.when_anime.json"))
+        legacy = ROOT / "examples" / "legacy"
+        TYPES.parse_enable_rules((legacy / "enable.empty.json").read_text(encoding="utf-8"))
+        anime = TYPES.parse_enable_rules((legacy / "enable.when_anime.json").read_text(encoding="utf-8"))
         self.assertEqual(anime.clauses[0].theme_id, "art_style")
         self.assertEqual(anime.clauses[0].op, "includes_any")
         self.assertEqual(anime.clauses[0].option_ids, ["anime"])
-        self.assertTrue((ROOT / "examples" / "legacy" / "theme_library.minimal.json").is_file())
+        self.assertTrue((legacy / "theme_library.minimal.json").is_file())
+        self.assertTrue((ROOT / "examples" / "wiring.art_and_character.json").is_file())
         self.assertFalse((ROOT / "examples" / "theme_library.minimal.json").exists())
         self.assertFalse((ROOT / "examples" / "sequence.minimal.json").exists())
+        self.assertFalse((ROOT / "examples" / "enable.empty.json").exists())
+        self.assertFalse((ROOT / "examples" / "enable.when_anime.json").exists())
 
     def test_removed_fields_and_one_theme(self):
         with self.assertRaises(TYPES.SchemaError) as ctx:

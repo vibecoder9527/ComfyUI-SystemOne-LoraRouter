@@ -120,32 +120,23 @@ class MigrateTests(unittest.TestCase):
 
     def test_sequence_plan_maps_theme_ids_and_warns_about_rewrites(self):
         plan = MIGRATE.plan_sequence(_legacy("sequence.minimal.json"))
-        self.assertEqual(
-            plan["removed"],
-            [
-                "S1ThemeLibrary",
-                "S1ThemeSequence",
-                "lora_bindings",
-                "fallback_option_id",
-                "strength_conflict",
-                "sequence_json",
-            ],
-        )
+        for name in ("run", "enable_json", "theme_result", "S1_THEME_RESULT", "lora_bindings"):
+            self.assertIn(name, plan["removed"])
         root, child = plan["nodes"]
         self.assertEqual(root["step_id"], "s1")
         self.assertEqual(root["theme_id"], "art_style")
-        self.assertEqual(root["run"], "enabled")
-        self.assertEqual(root["enable_json"]["clauses"], [])
-        self.assertEqual(child["run"], "when_upstream")
+        self.assertEqual(root["class_type"], "S1ThemeRoot")
+        self.assertFalse(root["dropped"])
+        self.assertIsNone(root["upstream_wire"])
+        self.assertEqual(child["class_type"], "S1Theme")
         self.assertEqual(child["theme_id"], "character_pack")
-        clause = child["enable_json"]["clauses"][0]
-        self.assertEqual(clause["theme_id"], "art_style")
-        self.assertNotEqual(clause["theme_id"], "s1")
-        self.assertEqual(clause["op"], "includes_any")
-        self.assertEqual(clause["option_ids"], ["anime"])
+        wire = child["upstream_wire"]
+        self.assertEqual(wire["theme_id"], "art_style")
+        self.assertNotEqual(wire["theme_id"], "s1")
+        self.assertEqual(wire["option_id"], "anime")
+        self.assertEqual(wire["op"], "includes_any")
         self.assertTrue(any("rewrite_options" in note for note in child["warnings"]))
         self.assertTrue(any("rewrite_instructions" in note for note in child["warnings"]))
-        TYPES.parse_enable_rules(child["enable_json"])
         dup = MIGRATE.plan_sequence(
             {
                 "steps": [
@@ -154,7 +145,8 @@ class MigrateTests(unittest.TestCase):
                 ]
             }
         )
-        self.assertEqual(dup["nodes"][1]["run"], "disabled")
+        self.assertTrue(dup["nodes"][1]["dropped"])
+        self.assertIsNone(dup["nodes"][1]["class_type"])
         self.assertTrue(any("unique theme ids" in note for note in dup["warnings"]))
         disabled = MIGRATE.plan_sequence(
             {
@@ -173,8 +165,118 @@ class MigrateTests(unittest.TestCase):
                 ]
             }
         )
-        self.assertEqual(disabled["nodes"][0]["run"], "disabled")
+        self.assertTrue(disabled["nodes"][0]["dropped"])
         self.assertTrue(any("disable_step" in note for note in disabled["nodes"][0]["warnings"]))
+
+    def test_router_graph_becomes_settings_root_and_an_option_wire(self):
+        art = json.loads(read_example("theme.art_style.json"))
+        pack = json.loads(read_example("theme.character_pack.json"))
+        enable = json.loads(_legacy("enable.when_anime.json"))
+        secret = "secret-key-not-for-notes"
+        source = {
+            "nodes": [
+                {
+                    "id": "art",
+                    "class_type": "S1Theme",
+                    "run": "enabled",
+                    "positive": "anime girl",
+                    "negative": "blurry",
+                    "theme_json": art,
+                    "enable_json": {"match": "any", "clauses": [{"theme_id": "ignored", "op": "answered"}]},
+                    "api_key": secret,
+                    "api_model": "m",
+                    "endpoint": "https://system-one.dev/v1/systemone",
+                    "noul_threshold": 0.4,
+                    "on_error": "raise",
+                    "min_confidence": 0.2,
+                },
+                {
+                    "id": "cast",
+                    "class_type": "S1Theme",
+                    "run": "when_upstream",
+                    "positive": "child",
+                    "negative": "",
+                    "theme_json": pack,
+                    "enable_json": enable,
+                    "upstream": ["art", 0],
+                    "api_key": secret,
+                    "api_model": "m",
+                    "endpoint": "https://system-one.dev/v1/systemone",
+                    "noul_threshold": 0.4,
+                    "on_error": "raise",
+                    "min_confidence": 0.2,
+                },
+                {
+                    "id": "off",
+                    "class_type": "S1Theme",
+                    "run": "disabled",
+                    "positive": "",
+                    "negative": "",
+                    "theme_json": art,
+                    "api_key": secret,
+                    "api_model": "m",
+                },
+                {
+                    "id": "agg",
+                    "class_type": "S1LoraAggregate",
+                    "inputs": {"model": ["model", 0], "theme_result": ["cast", 0]},
+                },
+            ]
+        }
+        plan = MIGRATE.migrate_router_graph(source)
+        for name in ("run", "enable_json", "theme_result", "S1_THEME_RESULT"):
+            self.assertIn(name, plan["removed"])
+        self.assertEqual(len(plan["settings_nodes"]), 1)
+        settings = plan["settings_nodes"][0]
+        self.assertEqual(settings["class_type"], "S1Settings")
+        self.assertEqual(settings["inputs"]["on_error"], "raise")
+        self.assertEqual(settings["inputs"]["noul_threshold"], 0.4)
+        self.assertEqual(settings["inputs"]["api_key"], secret)
+        notes = " ".join(plan["warnings"])
+        self.assertNotIn(secret, notes)
+        by_id = {node["id"]: node for node in plan["nodes"]}
+        self.assertEqual(by_id["art"]["class_type"], "S1ThemeRoot")
+        self.assertNotIn("run", by_id["art"]["inputs"])
+        self.assertNotIn("enable_json", by_id["art"]["inputs"])
+        self.assertNotIn("api_key", by_id["art"]["inputs"])
+        self.assertEqual(list(by_id["art"]["inputs"])[:2], ["positive", "negative"])
+        self.assertEqual(by_id["art"]["inputs"]["positive"], "anime girl")
+        self.assertEqual(by_id["art"]["inputs"]["negative"], "blurry")
+        self.assertEqual(by_id["art"]["inputs"]["settings"], ["settings", 0])
+        self.assertEqual(by_id["cast"]["class_type"], "S1Theme")
+        self.assertEqual(by_id["cast"]["inputs"]["upstream"], ["art", 0])
+        self.assertEqual(plan["wires"][0]["option_id"], "anime")
+        self.assertEqual(plan["wires"][0]["output_index"], 0)
+        self.assertNotIn("off", by_id)
+        self.assertEqual(plan["dropped"][0]["id"], "off")
+        self.assertNotIn("theme_result", by_id["agg"]["inputs"])
+        self.assertTrue(any("theme_result" in note for note in plan["warnings"]))
+        self.assertTrue(any("enable_json is ignored" in note for note in plan["warnings"]))
+
+        split = MIGRATE.migrate_router_graph(
+            {
+                "9": {
+                    "class_type": "S1Theme",
+                    "inputs": {
+                        "run": "when_upstream",
+                        "positive": "p",
+                        "negative": "n",
+                        "theme_json": json.dumps(art),
+                        "enable_json": json.dumps(
+                            {
+                                "match": "any",
+                                "clauses": [
+                                    {"theme_id": "art_style", "op": "includes_any", "option_ids": ["anime", "realistic"]}
+                                ],
+                            }
+                        ),
+                        "api_key": "",
+                    },
+                }
+            }
+        )
+        self.assertTrue(any("one Theme copy per option" in note for note in split["warnings"]))
+        self.assertIsNone(split["nodes"][0]["upstream_wire"])
 
 
 if __name__ == "__main__":

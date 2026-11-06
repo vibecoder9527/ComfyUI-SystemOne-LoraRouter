@@ -15,6 +15,7 @@ from tests.harness import (
     APPLY,
     CLIENT,
     ENGINE,
+    PACKAGE_NAME,
     PKG,
     ROOT,
     TYPES,
@@ -26,6 +27,8 @@ from tests.harness import (
     read_example,
     theme_doc,
 )
+
+BLOCKER = importlib.import_module(PACKAGE_NAME + ".schema.blocker")
 
 
 JS_MODEL = r"""
@@ -46,7 +49,11 @@ import {
   nextOptionId,
   nextThemeId,
   parseEditorDocument,
+  planOptionOutputs,
   planThemeIds,
+  optionOutputName,
+  relinkOptionSlots,
+  MAX_OPTION_OUTPUTS,
 } from "./js/s1_model.js";
 
 function assert(cond, message) {
@@ -314,6 +321,95 @@ const contested = planThemeIds([
 assert(contested.assignments[0].changed === false && contested.assignments[1].changed === false, "contested pair stays");
 assert(contested.assignments[2].themeId === "theme_2", "new node avoids the contested id");
 assert(contested.conflicts.length === 1 && contested.conflicts[0].keys.join(",") === "a,b", "conflict is only the restored pair");
+assert(contested.conflicts[0].reason.includes("left unchanged"), "conflict does not claim enable rules were retargeted");
+assert(contested.conflicts[0].reason.includes("repeated theme_id"), "conflict names the decision chain");
+
+const themeBody = {
+  version: 1,
+  theme_id: "art_style",
+  title: "T",
+  instructions: "I",
+  select_mode: "single",
+  options: [
+    { option_id: "anime", label: "Anime", description: "" },
+    { option_id: "none", label: "", description: "" },
+  ],
+};
+assert(optionOutputName(themeBody.options[0]) === "Anime (anime)", "label and id");
+assert(optionOutputName({ option_id: "none", label: "  " }) === "none", "id only");
+const planned = planOptionOutputs(JSON.stringify(themeBody));
+assert(planned.ok && planned.slots.length === MAX_OPTION_OUTPUTS, "32 slots");
+assert(planned.slots[0].name === "Anime (anime)" && planned.slots[0].hidden === false, "first visible");
+assert(planned.slots[1].name === "none" && planned.slots[1].type === "S1_DECISION", "second visible");
+assert(planned.slots[2].hidden === true && planned.slots[2].name === "", "pad hidden");
+assert(planned.reportIndex === 32, "report index");
+const invalidPlan = planOptionOutputs("{");
+assert(!invalidPlan.ok && invalidPlan.slots === null, "invalid plan leaves slots null");
+
+const fresh = {
+  id: 3,
+  outputs: [
+    { name: "option_1", type: "S1_DECISION", links: [4] },
+    { name: "report_json", type: "STRING", links: [5] },
+  ],
+  graph: {
+    links: {
+      4: { id: 4, origin_id: 3, origin_slot: 0, target_id: 1, target_slot: 0 },
+      5: { id: 5, origin_id: 3, origin_slot: 1, target_id: 2, target_slot: 0 },
+    },
+  },
+};
+const firstSync = relinkOptionSlots(fresh, planned.slots);
+assert(firstSync.first === true && firstSync.moved === 0, "first sync does not move");
+assert(fresh.graph.links[4].origin_slot === 0, "first leaves the option link");
+assert(fresh.graph.links[5].origin_slot === 1, "report name alone does not retarget");
+assert(fresh.outputs[0].s1OptionId === "anime", "stamped by index");
+
+const reorderBody = {
+  ...themeBody,
+  options: [
+    { option_id: "none", label: "None", description: "" },
+    { option_id: "anime", label: "Anime", description: "" },
+  ],
+};
+const reordered = planOptionOutputs(JSON.stringify(reorderBody));
+const wired = {
+  id: 7,
+  outputs: [
+    { name: "Anime (anime)", type: "S1_DECISION", links: [1], s1OptionId: "anime" },
+    { name: "none", type: "S1_DECISION", links: [2], s1OptionId: "none" },
+  ],
+  graph: {
+    links: {
+      1: { id: 1, origin_id: 7, origin_slot: 0, target_id: 8, target_slot: 0, type: "S1_DECISION" },
+      2: { id: 2, origin_id: 7, origin_slot: 1, target_id: 9, target_slot: 0, type: "S1_DECISION" },
+    },
+    _nodes: [],
+  },
+};
+const moved = relinkOptionSlots(wired, reordered.slots);
+assert(moved.first === false && moved.moved === 2, "later sync moves both");
+assert(wired.graph.links[1].origin_slot === 1, "anime follows its id");
+assert(wired.graph.links[2].origin_slot === 0, "none follows its id");
+assert(wired.outputs[0].links.includes(2) && wired.outputs[1].links.includes(1), "link ids follow the slots");
+
+const dropped = {
+  id: 1,
+  outputs: [
+    { name: "Gone", type: "S1_DECISION", links: [9], s1OptionId: "gone" },
+    { name: "Anime (anime)", type: "S1_DECISION", links: [], s1OptionId: "anime" },
+  ],
+  graph: {
+    links: {
+      9: { id: 9, origin_id: 1, origin_slot: 0, target_id: 2, target_slot: 3, type: "S1_DECISION" },
+    },
+    _nodes: [{ id: 2, inputs: [{}, {}, {}, { link: 9 }] }],
+  },
+};
+const drop = relinkOptionSlots(dropped, planned.slots);
+assert(drop.dropped === 1, "missing option drops the wire");
+assert(dropped.graph.links[9] === undefined, "link removed");
+assert(dropped.graph._nodes[0].inputs[3].link === null, "target input cleared");
 console.log("ok");
 """
 
@@ -340,16 +436,39 @@ def plan_theme_ids(entries):
 
 
 class NodeTests(unittest.TestCase):
+    def _settings(self, **overrides):
+        node = PKG.NODE_CLASS_MAPPINGS["S1Settings"]()
+        values = {
+            "api_key": "",
+            "api_model": "",
+            "endpoint": CLIENT.DEFAULT_ENDPOINT,
+            "noul_threshold": 0.5,
+            "on_error": "passthrough",
+            "min_confidence": 0.0,
+        }
+        values.update(overrides)
+        (settings,) = node.build(**values)
+        return settings
+
     def test_registration_and_widget_order(self):
         mappings = PKG.NODE_CLASS_MAPPINGS
         self.assertEqual(
             set(mappings),
-            {"S1LoraLibrary", "S1Theme", "S1ThemeCollect", "S1LoraAggregate"},
+            {
+                "S1LoraLibrary",
+                "S1Settings",
+                "S1ThemeRoot",
+                "S1Theme",
+                "S1ThemeCollect",
+                "S1LoraAggregate",
+            },
         )
         self.assertEqual(
             PKG.NODE_DISPLAY_NAME_MAPPINGS,
             {
                 "S1LoraLibrary": "LoRA Library",
+                "S1Settings": "SystemOne Settings",
+                "S1ThemeRoot": "Theme Root",
                 "S1Theme": "Theme",
                 "S1ThemeCollect": "Theme Collect",
                 "S1LoraAggregate": "LoRA Aggregate",
@@ -358,38 +477,73 @@ class NodeTests(unittest.TestCase):
         self.assertEqual(PKG.WEB_DIRECTORY, "./js")
         for node in mappings.values():
             self.assertEqual(node.CATEGORY, "SystemOne/LoraRouter")
+
+        root = mappings["S1ThemeRoot"]
         theme = mappings["S1Theme"]
-        self.assertEqual(theme.FUNCTION, "decide")
-        self.assertEqual(theme.RETURN_TYPES, ("S1_THEME_RESULT", "STRING"))
-        self.assertEqual(theme.RETURN_NAMES, ("theme_result", "report_json"))
-        required = list(theme.INPUT_TYPES()["required"])
+        slot_types = ("S1_DECISION",) * TYPES.MAX_OPTION_OUTPUTS + ("STRING",)
+        slot_names = tuple(
+            f"option_{index + 1}" for index in range(TYPES.MAX_OPTION_OUTPUTS)
+        ) + ("report_json",)
+        self.assertEqual(TYPES.MAX_OPTION_OUTPUTS, 32)
+        self.assertEqual(TYPES.REPORT_OUTPUT_INDEX, 32)
+        for node in (root, theme):
+            self.assertEqual(node.FUNCTION, "decide")
+            self.assertEqual(node.RETURN_TYPES, slot_types)
+            self.assertEqual(node.RETURN_NAMES, slot_names)
+            inputs = node.INPUT_TYPES()
+            self.assertNotIn("optional", inputs)
+            required = inputs["required"]
+            self.assertLess(list(required).index("positive"), list(required).index("negative"))
+            self.assertTrue(required["positive"][1]["forceInput"])
+            self.assertTrue(required["negative"][1]["forceInput"])
+            self.assertEqual(required["settings"][0], "S1_SETTINGS")
+            self.assertTrue(required["settings"][1]["forceInput"])
+            self.assertFalse(required["theme_json"][1]["dynamicPrompts"])
+            self.assertEqual(required["theme_json"][1]["default"], TYPES.EMPTY_THEME_JSON)
+            for banned in ("run", "enable_json", "api_key", "api_model", "endpoint", "on_error"):
+                self.assertNotIn(banned, required)
+            self.assertIn("visual editor", node.DESCRIPTION.lower())
+            self.assertIn("Positive is the input above negative", node.DESCRIPTION)
         self.assertEqual(
-            required,
-            ["positive", "negative", "theme_json", "run", "enable_json", "api_key", "api_model"],
+            list(root.INPUT_TYPES()["required"]),
+            ["positive", "negative", "settings", "theme_json"],
         )
-        self.assertEqual(required[required.index("positive") + 1], "negative")
-        inputs = theme.INPUT_TYPES()
-        self.assertEqual(inputs["required"]["negative"][1]["default"], "")
-        self.assertTrue(inputs["required"]["negative"][1]["multiline"])
-        self.assertEqual(inputs["required"]["run"][1]["default"], "disabled")
-        self.assertEqual(inputs["required"]["run"][0], ["disabled", "enabled", "when_upstream"])
-        self.assertFalse(inputs["required"]["theme_json"][1]["dynamicPrompts"])
-        self.assertFalse(inputs["required"]["enable_json"][1]["dynamicPrompts"])
-        self.assertEqual(inputs["required"]["theme_json"][1]["default"], TYPES.EMPTY_THEME_JSON)
-        self.assertEqual(inputs["required"]["enable_json"][1]["default"], TYPES.EMPTY_ENABLE_JSON)
         self.assertEqual(
-            set(inputs["optional"]),
-            {"upstream", "endpoint", "noul_threshold", "on_error", "min_confidence"},
+            list(theme.INPUT_TYPES()["required"]),
+            ["positive", "negative", "settings", "upstream", "theme_json"],
         )
-        self.assertTrue(inputs["optional"]["upstream"][1]["forceInput"])
-        self.assertEqual(inputs["optional"]["on_error"][1]["default"], "passthrough")
-        self.assertEqual(inputs["optional"]["endpoint"][1]["default"], CLIENT.DEFAULT_ENDPOINT)
-        signature = inspect.signature(theme.decide)
+        self.assertEqual(theme.INPUT_TYPES()["required"]["upstream"][0], "S1_DECISION")
+        self.assertIn("ExecutionBlocker", theme.DESCRIPTION)
+        self.assertNotIn("when_upstream", theme.DESCRIPTION)
+        signature = inspect.signature(root.decide)
         params = list(signature.parameters)
         self.assertEqual(params[params.index("positive") + 1], "negative")
         self.assertIs(signature.parameters["negative"].default, inspect.Parameter.empty)
-        self.assertIn("when_upstream", theme.DESCRIPTION)
-        self.assertIn("visual editor", theme.DESCRIPTION.lower())
+
+        settings = mappings["S1Settings"]
+        self.assertEqual(settings.RETURN_TYPES, ("S1_SETTINGS",))
+        self.assertEqual(settings.RETURN_NAMES, ("settings",))
+        self.assertEqual(
+            list(settings.INPUT_TYPES()["required"]),
+            [
+                "api_key",
+                "api_model",
+                "endpoint",
+                "noul_threshold",
+                "on_error",
+                "min_confidence",
+            ],
+        )
+        self.assertEqual(
+            settings.INPUT_TYPES()["required"]["endpoint"][1]["default"],
+            CLIENT.DEFAULT_ENDPOINT,
+        )
+        self.assertEqual(settings.INPUT_TYPES()["required"]["on_error"][1]["default"], "passthrough")
+        built = self._settings(api_key="sekret-token-xyz", on_error="raise", noul_threshold=0.4)
+        self.assertNotIn("sekret-token-xyz", repr(built))
+        self.assertIn("api_key=set", repr(built))
+        self.assertEqual(built.on_error, "raise")
+        self.assertEqual(built.noul_threshold, 0.4)
 
         library = mappings["S1LoraLibrary"]
         self.assertEqual(library.RETURN_TYPES, ("S1_LORA_LIB",))
@@ -401,14 +555,19 @@ class NodeTests(unittest.TestCase):
 
         collect = mappings["S1ThemeCollect"]
         self.assertEqual(collect.FUNCTION, "merge")
+        self.assertEqual(collect.RETURN_TYPES, ("S1_DECISION",))
+        self.assertEqual(collect.RETURN_NAMES, ("decision",))
         self.assertEqual(list(collect.INPUT_TYPES()["required"]), ["a", "b"])
-        self.assertNotIn("optional", collect.INPUT_TYPES())
+        self.assertEqual(collect.INPUT_TYPES()["required"]["a"][0], "S1_DECISION")
         self.assertTrue(collect.INPUT_TYPES()["required"]["a"][1]["forceInput"])
+        self.assertIn("ExecutionBlocker", collect.DESCRIPTION)
 
         aggregate = mappings["S1LoraAggregate"]
         self.assertEqual(aggregate.FUNCTION, "apply")
         self.assertEqual(aggregate.RETURN_TYPES, ("MODEL", "CLIP", "STRING"))
-        self.assertEqual(list(aggregate.INPUT_TYPES()["required"]), ["model", "lora_lib", "theme_result"])
+        self.assertEqual(list(aggregate.INPUT_TYPES()["required"]), ["model", "lora_lib", "decision"])
+        self.assertEqual(aggregate.INPUT_TYPES()["required"]["decision"][0], "S1_DECISION")
+        self.assertNotIn("theme_result", aggregate.INPUT_TYPES()["required"])
         self.assertEqual(set(aggregate.INPUT_TYPES()["optional"]), {"clip", "on_error"})
         self.assertFalse((ROOT / "sequence_engine.py").exists())
         self.assertFalse((ROOT / "nodes" / "theme_library.py").exists())
@@ -416,113 +575,180 @@ class NodeTests(unittest.TestCase):
         with self.assertRaises(ModuleNotFoundError):
             importlib.import_module("s1_lora_router.sequence_engine")
 
-    def test_nodes_run_the_example_chain_without_a_live_api(self):
-        lora_node = PKG.NODE_CLASS_MAPPINGS["S1LoraLibrary"]()
-        theme_node = PKG.NODE_CLASS_MAPPINGS["S1Theme"]()
+    def test_root_option_slots_child_aggregate_and_unselected_skip(self):
+        secret = "sekret-token-xyz"
+        settings = self._settings(api_key=secret, api_model="my-model")
+        library_node = PKG.NODE_CLASS_MAPPINGS["S1LoraLibrary"]()
+        (library,) = library_node.build(read_example("lora_library.minimal.json"))
+        root = PKG.NODE_CLASS_MAPPINGS["S1ThemeRoot"]()
+        child = PKG.NODE_CLASS_MAPPINGS["S1Theme"]()
         aggregate = PKG.NODE_CLASS_MAPPINGS["S1LoraAggregate"]()
         collect = PKG.NODE_CLASS_MAPPINGS["S1ThemeCollect"]()
-        (library,) = lora_node.build(read_example("lora_library.minimal.json"))
         seen = []
 
         def urlopen(req, timeout=None):
             seen.append(payload_from_request(req)["state"])
             return canned_urlopen(req, timeout)
 
-        secret = "sekret-token-xyz"
         with mock.patch("urllib.request.urlopen", side_effect=urlopen):
-            art, art_report = theme_node.decide(
+            art = root.decide(
                 positive="anime girl",
                 negative="blurry",
+                settings=settings,
                 theme_json=read_example("theme.art_style.json"),
-                run="enabled",
-                enable_json=read_example("enable.empty.json"),
-                api_key=secret,
-                api_model="my-model",
             )
-            pack, pack_report = theme_node.decide(
+            pack = child.decide(
                 positive="child",
                 negative="",
+                settings=settings,
                 theme_json=read_example("theme.character_pack.json"),
-                run="when_upstream",
-                enable_json=read_example("enable.when_anime.json"),
-                api_key=secret,
-                api_model="my-model",
-                upstream=art,
+                upstream=art[0],
             )
         self.assertEqual(seen[0], {"positive": "anime girl", "negative": "blurry"})
         self.assertEqual(seen[1], {"positive": "child", "negative": ""})
-        self.assertEqual(art.get("art_style").selected, ["anime"])
-        self.assertEqual(pack.tags, ["style_anime", "char_a", "char_b"])
-        for report in (art_report, pack_report):
-            self.assertNotIn(secret, report)
-            self.assertIn('"api":{', report)
+        self.assertEqual(len(art), 33)
+        anime, realistic, none_slot = art[0], art[1], art[2]
+        self.assertEqual(anime.slot_option_id, "anime")
+        self.assertEqual(anime.emitted_reason, "selected")
+        self.assertEqual(anime.result.get("art_style").selected, ["anime"])
+        self.assertEqual(anime.result.tags, ["style_anime"])
+        self.assertTrue(BLOCKER.is_execution_blocker(realistic))
+        self.assertIsNone(realistic.message)
+        self.assertTrue(BLOCKER.is_execution_blocker(none_slot))
+        self.assertTrue(BLOCKER.is_execution_blocker(art[3]))
+        self.assertNotIn(secret, art[-1])
+        art_report = json.loads(art[-1])
+        self.assertEqual(art_report["role"], "root")
+        self.assertEqual(art_report["slots"][0], {"option_id": "anime", "emitted": "selected"})
+        self.assertEqual(art_report["slots"][1]["emitted"], "blocked")
+        self.assertEqual(pack[0].slot_option_id, "waifu_a")
+        self.assertEqual(pack[1].slot_option_id, "waifu_b")
+        self.assertIs(pack[0].result, pack[1].result)
+        self.assertEqual(pack[0].result.tags, ["style_anime", "char_a", "char_b"])
+        self.assertNotIn(secret, pack[-1])
+
+        with mock.patch("urllib.request.urlopen") as skipped_call:
+            blocked = child.decide(
+                positive="child",
+                negative="",
+                settings=settings,
+                theme_json="{",
+                upstream=realistic,
+            )
+        skipped_call.assert_not_called()
+        self.assertTrue(all(BLOCKER.is_execution_blocker(item) for item in blocked[:-1]))
+        blocked_report = json.loads(blocked[-1])
+        self.assertEqual(blocked_report["status"], "blocked")
+        self.assertFalse(blocked_report["api"]["called"])
+        self.assertNotIn(secret, blocked[-1])
+
         model = object()
-        out_model, out_clip, agg_report = aggregate.apply(model, library, pack)
+        out_model, out_clip, agg_report = aggregate.apply(model, library, pack[0])
         self.assertIs(out_model, model)
         self.assertIsNone(out_clip)
         parsed = json.loads(agg_report)
         self.assertEqual([item["lora_id"] for item in parsed["applied"]], ["char_a", "style_anime_v3"])
         self.assertEqual(parsed["matched"][1]["strength_model"], 0.8)
         self.assertNotEqual(parsed["matched"][1]["strength_model"], 0.85)
-        (shared_branch,) = collect.merge(art, pack)
+
+        (shared,) = collect.merge(art[0], pack[0])
+        self.assertEqual(shared.emitted_reason, "collected")
         self.assertEqual(
-            [item.theme_id for item in shared_branch.decisions],
+            [item.theme_id for item in shared.result.decisions],
             ["art_style", "character_pack"],
         )
-        self.assertEqual(shared_branch.tags, ["style_anime", "char_a", "char_b"])
+        self.assertEqual(shared.result.tags, ["style_anime", "char_a", "char_b"])
         self.assertEqual(
-            [item.theme_id for item in shared_branch.decisions].count("art_style"),
+            [item.theme_id for item in shared.result.decisions].count("art_style"),
             1,
         )
-        left, _left_report = theme_node.decide(
-            positive="",
-            negative="",
-            theme_json=json.dumps(theme_doc(theme_id="left", options=[option("a", ["ta"])])),
-            run="enabled",
-            enable_json=TYPES.EMPTY_ENABLE_JSON,
-            api_key="",
-            api_model="",
-        )
-        right, _right_report = theme_node.decide(
-            positive="",
-            negative="",
-            theme_json=json.dumps(theme_doc(theme_id="right", options=[option("b", ["tb"])])),
-            run="enabled",
-            enable_json=TYPES.EMPTY_ENABLE_JSON,
-            api_key="",
-            api_model="",
-        )
-        (merged,) = collect.merge(left, right)
-        self.assertEqual([item.theme_id for item in merged.decisions], ["left", "right"])
 
-        with mock.patch("urllib.request.urlopen") as urlopen_disabled:
-            skipped, skipped_report = theme_node.decide(
+        left = root.decide(
+            positive="",
+            negative="",
+            settings=settings,
+            theme_json=json.dumps(theme_doc(theme_id="left", options=[option("a", ["ta"])])),
+        )
+        right = root.decide(
+            positive="",
+            negative="",
+            settings=settings,
+            theme_json=json.dumps(theme_doc(theme_id="right", options=[option("b", ["tb"])])),
+        )
+        (merged,) = collect.merge(left[0], right[0])
+        self.assertEqual([item.theme_id for item in merged.result.decisions], ["left", "right"])
+
+        with mock.patch("urllib.request.urlopen") as empty_call:
+            empty = root.decide(
                 positive="",
                 negative="",
+                settings=settings,
                 theme_json=read_example("theme.empty.json"),
-                run="disabled",
-                enable_json=read_example("enable.empty.json"),
-                api_key=secret,
-                api_model="",
             )
-        urlopen_disabled.assert_not_called()
-        self.assertEqual(skipped.get("theme_1").status, "skipped")
-        self.assertNotIn(secret, skipped_report)
-        self.assertFalse(json.loads(skipped_report)["api"]["called"])
+        empty_call.assert_not_called()
+        self.assertTrue(all(BLOCKER.is_execution_blocker(item) for item in empty[:-1]))
+        self.assertIn("no option slots", empty[-1])
+        self.assertNotIn(secret, empty[-1])
 
-        with mock.patch("urllib.request.urlopen") as urlopen_bad:
+        with mock.patch("urllib.request.urlopen") as bad_json:
             with self.assertRaises(TYPES.SchemaError):
-                theme_node.decide(
+                root.decide(
                     positive="",
                     negative="",
+                    settings=settings,
                     theme_json="{",
-                    run="disabled",
-                    enable_json=read_example("enable.empty.json"),
-                    api_key="",
-                    api_model="",
-                    on_error="passthrough",
                 )
-        urlopen_bad.assert_not_called()
+        bad_json.assert_not_called()
+        with self.assertRaises(TYPES.SchemaError) as upstream_error:
+            child.decide(
+                positive="",
+                negative="",
+                settings=settings,
+                theme_json="{",
+                upstream=object(),
+            )
+        self.assertIn("S1_DECISION", str(upstream_error.exception))
+
+    def test_none_emits_without_tags_and_a_child_still_runs(self):
+        settings = self._settings(api_key="k")
+        root = PKG.NODE_CLASS_MAPPINGS["S1ThemeRoot"]()
+        child = PKG.NODE_CLASS_MAPPINGS["S1Theme"]()
+
+        def none_choice(req, timeout=None):
+            body = payload_from_request(req)
+            answers = {
+                qid: {"choice": "none", "confidence": 1}
+                for qid, question in body["questions"].items()
+                if question["type"] == "choice"
+            }
+            return FakeHTTPResponse({"answers": answers})
+
+        with mock.patch("urllib.request.urlopen", side_effect=none_choice):
+            art = root.decide(
+                positive="plain photo",
+                negative="",
+                settings=settings,
+                theme_json=read_example("theme.art_style.json"),
+            )
+        none_slot = art[2]
+        self.assertEqual(none_slot.slot_option_id, "none")
+        self.assertEqual(none_slot.emitted_reason, "selected")
+        self.assertEqual(none_slot.result.tags, [])
+        self.assertNotIn("should_not_apply", none_slot.result.tags)
+        self.assertTrue(BLOCKER.is_execution_blocker(art[0]))
+        followed = child.decide(
+            positive="still here",
+            negative="",
+            settings=settings,
+            theme_json=json.dumps(theme_doc(theme_id="after_none", options=[option("only", ["extra"])])),
+            upstream=none_slot,
+        )
+        self.assertEqual(followed[0].result.tags, ["extra"])
+        self.assertEqual(followed[0].result.get("art_style").selected, ["none"])
+
+    def test_on_error_passthrough_emits_every_slot_and_raise_stops(self):
+        root = PKG.NODE_CLASS_MAPPINGS["S1ThemeRoot"]()
+        doc = json.dumps(theme_doc(theme_id="bad_choice", options=[option("a"), option("b")]))
 
         def bad_choice(req, timeout=None):
             body = payload_from_request(req)
@@ -534,22 +760,64 @@ class NodeTests(unittest.TestCase):
             return FakeHTTPResponse({"answers": answers})
 
         with mock.patch("urllib.request.urlopen", side_effect=bad_choice):
+            passed = root.decide(
+                positive="p",
+                negative="n",
+                settings=self._settings(api_key="k", on_error="passthrough"),
+                theme_json=doc,
+            )
+        self.assertEqual(passed[0].emitted_reason, "passthrough_error")
+        self.assertEqual(passed[1].emitted_reason, "passthrough_error")
+        self.assertIs(passed[0].result, passed[1].result)
+        self.assertEqual(passed[0].result.tags, [])
+        self.assertTrue(BLOCKER.is_execution_blocker(passed[2]))
+        self.assertTrue(any("passthrough" in note for note in json.loads(passed[-1])["notes"]))
+
+        with mock.patch("urllib.request.urlopen", side_effect=bad_choice):
             with self.assertRaises(ENGINE.ThemeError):
-                theme_node.decide(
-                    positive="",
-                    negative="",
-                    theme_json=json.dumps(
-                        theme_doc(
-                            theme_id="bad_choice",
-                            options=[option("a"), option("b")],
-                        )
-                    ),
-                    run="enabled",
-                    enable_json=read_example("enable.empty.json"),
-                    api_key="k",
-                    api_model="m",
-                    on_error="raise",
+                root.decide(
+                    positive="p",
+                    negative="n",
+                    settings=self._settings(api_key="k", on_error="raise"),
+                    theme_json=doc,
                 )
+
+    def test_more_than_32_options_fail_before_http(self):
+        root = PKG.NODE_CLASS_MAPPINGS["S1ThemeRoot"]()
+        options = [option(f"o{index}") for index in range(33)]
+        doc = json.dumps(theme_doc(theme_id="wide", select_mode="multi", options=options))
+        with mock.patch("urllib.request.urlopen") as urlopen:
+            with self.assertRaises(TYPES.SchemaError) as ctx:
+                root.decide(
+                    positive="p",
+                    negative="",
+                    settings=self._settings(api_key="k"),
+                    theme_json=doc,
+                )
+        urlopen.assert_not_called()
+        self.assertIn("32", str(ctx.exception))
+
+    def test_multi_with_no_selection_blocks_every_slot(self):
+        root = PKG.NODE_CLASS_MAPPINGS["S1ThemeRoot"]()
+
+        def low_scores(req, timeout=None):
+            body = payload_from_request(req)
+            answers = {qid: {"noul": 0.1} for qid in body["questions"]}
+            return FakeHTTPResponse({"answers": answers})
+
+        with mock.patch("urllib.request.urlopen", side_effect=low_scores):
+            pack = root.decide(
+                positive="nobody",
+                negative="",
+                settings=self._settings(api_key="k"),
+                theme_json=read_example("theme.character_pack.json"),
+            )
+        self.assertTrue(BLOCKER.is_execution_blocker(pack[0]))
+        self.assertTrue(BLOCKER.is_execution_blocker(pack[1]))
+        report = json.loads(pack[-1])
+        self.assertEqual(report["selected"], [])
+        self.assertEqual(report["accumulated_tags"], [])
+        self.assertTrue(any("every option slot is blocked" in note for note in report["notes"]))
 
     def test_aggregate_node_passthrough_and_raise(self):
         node = PKG.NODE_CLASS_MAPPINGS["S1LoraAggregate"]()
@@ -565,15 +833,12 @@ class NodeTests(unittest.TestCase):
             node.apply(model, "nope", "nope", on_error="raise")
 
         library = lora_entries({"lora_id": "L", "name": "missing.safetensors", "tags": ["only_tag"]})
-        theme = PKG.NODE_CLASS_MAPPINGS["S1Theme"]()
-        (result, _report) = theme.decide(
+        theme = PKG.NODE_CLASS_MAPPINGS["S1ThemeRoot"]()
+        result = theme.decide(
             positive="",
             negative="",
+            settings=self._settings(api_key=""),
             theme_json=json.dumps(theme_doc(options=[option("only", ["only_tag"])])),
-            run="enabled",
-            enable_json=TYPES.EMPTY_ENABLE_JSON,
-            api_key="",
-            api_model="",
         )
 
         def missing_api():
@@ -589,12 +854,14 @@ class NodeTests(unittest.TestCase):
         original = APPLY._import_comfy
         APPLY._import_comfy = missing_api
         try:
-            passed_model, passed_clip, passed_report = node.apply(model, library, result, on_error="passthrough")
+            passed_model, passed_clip, passed_report = node.apply(
+                model, library, result[0], on_error="passthrough"
+            )
             self.assertIs(passed_model, model)
             self.assertIsNone(passed_clip)
             self.assertIn("missing.safetensors", json.loads(passed_report)["errors"][0])
             with self.assertRaises(APPLY.ApplyError):
-                node.apply(model, library, result, on_error="raise")
+                node.apply(model, library, result[0], on_error="raise")
         finally:
             APPLY._import_comfy = original
 
@@ -660,22 +927,30 @@ class NodeTests(unittest.TestCase):
             ["theme_1", "theme_2", "theme_3"],
         )
 
-        theme_node = PKG.NODE_CLASS_MAPPINGS["S1Theme"]()
-        upstream = None
-        result = None
-        for key, run in zip(("a", "b", "c"), ("enabled", "when_upstream", "when_upstream")):
-            item = by_key[key]
-            result, _report = theme_node.decide(
-                positive="p",
-                negative="",
-                theme_json=item["themeJson"],
-                run=run,
-                enable_json=item["enableJson"],
-                api_key="",
-                api_model="",
-                upstream=upstream,
-            )
-            upstream = result
+        settings = self._settings(api_key="")
+        root = PKG.NODE_CLASS_MAPPINGS["S1ThemeRoot"]()
+        child = PKG.NODE_CLASS_MAPPINGS["S1Theme"]()
+        first = root.decide(
+            positive="p",
+            negative="",
+            settings=settings,
+            theme_json=by_key["a"]["themeJson"],
+        )
+        second_out = child.decide(
+            positive="p",
+            negative="",
+            settings=settings,
+            theme_json=by_key["b"]["themeJson"],
+            upstream=first[0],
+        )
+        third = child.decide(
+            positive="p",
+            negative="",
+            settings=settings,
+            theme_json=by_key["c"]["themeJson"],
+            upstream=second_out[0],
+        )
+        result = third[0].result
         self.assertEqual(
             [item.theme_id for item in result.decisions],
             ["theme_1", "theme_2", "theme_3"],
@@ -683,25 +958,38 @@ class NodeTests(unittest.TestCase):
         self.assertTrue(all(item.status == "ok" for item in result.decisions))
         self.assertEqual([item.selected for item in result.decisions], [["yes"], ["yes"], ["yes"]])
         self.assertEqual(result.tags, ["ta", "tb", "tc"])
+        self.assertFalse(json.loads(first[-1])["api"]["called"])
 
     def test_docs_describe_the_break(self):
         needles = (
-            "S1Theme",
-            "S1LoraAggregate",
+            "S1ThemeRoot",
+            "S1Settings",
+            "S1_DECISION",
+            "ExecutionBlocker",
+            "enable_json",
+            "theme_result",
             "S1ThemeCollect",
-            "when_upstream",
-            "S1ThemeSequence",
-            "lora_bindings",
-            "disabled",
+            "none_option_id",
+            "S1Theme",
         )
         for name in ("README.md", "SPEC.md", "MIGRATION.md"):
             text = (ROOT / name).read_text(encoding="utf-8")
             for needle in needles:
                 self.assertIn(needle, text, f"{name} missing {needle}")
-        readme = (ROOT / "README.md").read_text(encoding="utf-8").lower()
-        self.assertIn("sidebar", readme)
-        self.assertIn("sidebar tab is gone", readme)
-        self.assertIn("no apply to node", readme)
+            self.assertIn("Positive is the input above negative", text)
+            self.assertLess(text.index("Positive is the input above negative"), text.lower().index("negative"))
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        lowered = readme.lower()
+        self.assertIn("sidebar tab is gone", lowered)
+        self.assertIn("no apply to node", lowered)
+        self.assertIn("32", readme)
+        migration = (ROOT / "MIGRATION.md").read_text(encoding="utf-8")
+        self.assertIn("lora_bindings", migration)
+        self.assertIn("S1ThemeSequence", migration)
+        self.assertIn("run", migration)
+        spec = (ROOT / "SPEC.md").read_text(encoding="utf-8")
+        self.assertIn("passthrough", spec)
+        self.assertIn("every option slot", spec.lower())
 
     def test_editor_is_modal_only_and_model_checks_pass(self):
         editors = (ROOT / "js" / "s1_editors.js").read_text(encoding="utf-8")
@@ -721,6 +1009,7 @@ class NodeTests(unittest.TestCase):
         self.assertIn("function liveWrite(", editors)
         self.assertIn("function pollWidgets(", editors)
         self.assertIn("function applyInvalidMarks(", editors)
+        self.assertIn("function syncOptionOutputs(", editors)
         self.assertIn("serialize: false", editors)
         self.assertIn('from "../../scripts/api.js"', editors)
         self.assertIn("/object_info/LoraLoader", editors)
@@ -736,15 +1025,23 @@ class NodeTests(unittest.TestCase):
         self.assertNotIn('field("lora_id"', editors)
         self.assertNotIn('field("theme_id"', editors)
         self.assertNotIn('field("option_id"', editors)
-        self.assertIn('field("upstream theme_id"', editors)
+        self.assertNotIn('field("upstream theme_id"', editors)
+        self.assertNotIn("promptField(", editors)
         self.assertIn("strength (model & clip)", editors)
         self.assertIn("input.readOnly = true", editors)
-        self.assertLess(editors.index('promptField("positive"'), editors.index('promptField("negative"'))
+        self.assertLess(
+            editors.index("Positive is the input above negative"),
+            editors.index("Prompts are not stored in theme_json"),
+        )
         self.assertIn("There is no fallback option.", editors)
         self.assertIn("export function assignThemeDocument", model_js)
         self.assertIn("export function planThemeIds", model_js)
+        self.assertIn("export function planOptionOutputs", model_js)
+        self.assertIn("export function relinkOptionSlots", model_js)
         self.assertNotIn("export function assignThemeIds", model_js)
         self.assertIn("planThemeIds", editors)
+        self.assertIn("planOptionOutputs", editors)
+        self.assertIn("relinkOptionSlots", editors)
         self.assertIn("beforeConfigureGraph()", editors)
         self.assertIn("loadedGraphNode(node)", editors)
         self.assertIn("afterConfigureGraph()", editors)
@@ -758,13 +1055,14 @@ class NodeTests(unittest.TestCase):
         self.assertIn("lora_bindings was removed; selected options contribute tags", model_js)
         self.assertIn("fallback_option_id was removed and is not applied", model_js)
         live = editors[editors.index("function liveWrite(") : editors.index("function pollWidgets(")]
-        self.assertLess(
-            live.index("commitModel(state.kind, state.model)"),
-            live.index('commitModel("enable", state.enable)'),
-        )
-        self.assertLess(live.index('commitModel("enable", state.enable)'), live.index("writeWidget"))
+        self.assertIn("syncOptionOutputs(state.node)", live)
+        self.assertNotIn("enable_json", live)
+        self.assertNotIn("positive", live)
+        self.assertNotIn("negative", live)
         self.assertIn("S1LoraLibrary", editors)
+        self.assertIn("S1ThemeRoot", editors)
         self.assertIn("S1Theme", editors)
+        self.assertNotIn("S1Settings", editors)
         self.assertNotIn("S1ThemeCollect", editors)
         self.assertNotIn("S1LoraAggregate", editors)
         node = shutil.which("node")
@@ -809,7 +1107,7 @@ class NodeTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertEqual(
             completed.stdout.strip(),
-            "S1LoraAggregate,S1LoraLibrary,S1Theme,S1ThemeCollect",
+            "S1LoraAggregate,S1LoraLibrary,S1Settings,S1Theme,S1ThemeCollect,S1ThemeRoot",
         )
 
     def test_top_level_nodes_package_imports(self):

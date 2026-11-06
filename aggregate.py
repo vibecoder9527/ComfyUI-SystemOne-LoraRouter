@@ -13,6 +13,7 @@ from typing import Any
 
 from .apply_loras import apply_loras
 from .schema.types import (
+    DecisionPayload,
     LoraLibrary,
     SchemaError,
     ThemeDecision,
@@ -32,7 +33,18 @@ class AggregateOutcome:
     report: dict[str, Any] = field(default_factory=dict)
 
 
-def match_loras(lora_lib: LoraLibrary, result: ThemeResult) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+def _result_of(decision: DecisionPayload) -> ThemeResult:
+    if not isinstance(decision, DecisionPayload):
+        raise SchemaError(
+            "decision must be an S1_DECISION from a Theme option slot or Theme Collect"
+        )
+    result = decision.result
+    if not isinstance(result, ThemeResult):
+        raise SchemaError("S1_DECISION is missing an accumulated result")
+    return result
+
+
+def match_loras(lora_lib: LoraLibrary, decision: DecisionPayload) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Return ``(matched, skipped)`` without loading weight files.
 
     ``matched`` items use the ``apply_loras`` shape plus ``matched_tags``.
@@ -42,8 +54,7 @@ def match_loras(lora_lib: LoraLibrary, result: ThemeResult) -> tuple[list[dict[s
 
     if not isinstance(lora_lib, LoraLibrary):
         raise SchemaError("lora_lib must be an S1_LORA_LIB from S1LoraLibrary")
-    if not isinstance(result, ThemeResult):
-        raise SchemaError("theme_result must be an S1_THEME_RESULT")
+    result = _result_of(decision)
     tag_sources: dict[str, list[list[str]]] = {}
     for decision in result.decisions:
         if decision.status != "ok":
@@ -88,14 +99,15 @@ def aggregate_loras(
     model: Any,
     clip: Any,
     lora_lib: LoraLibrary,
-    theme_result: ThemeResult,
+    decision: DecisionPayload,
     on_error: str = "passthrough",
 ) -> AggregateOutcome:
     """Apply each matched LoRA once. ``on_error`` is forwarded to ``apply_loras``."""
 
     if on_error not in _ON_ERROR:
         raise SchemaError(f"on_error must be one of: {', '.join(sorted(_ON_ERROR))}")
-    matched, skipped = match_loras(lora_lib, theme_result)
+    theme_result = _result_of(decision)
+    matched, skipped = match_loras(lora_lib, decision)
     apply_items = [
         {
             "lora_id": item["lora_id"],
@@ -112,7 +124,9 @@ def aggregate_loras(
         names = ", ".join(item["lora_id"] for item in skipped)
         notes.append(f"Skipped LoRA(s) with enabled_default false: {names}.")
     if theme_result.errors:
-        notes.append("Theme result already recorded errors. Matching still used the tags it kept.")
+        notes.append(
+            "The decision already recorded theme errors. Matching still used the tags it kept."
+        )
     report = {
         "tags": list(theme_result.tags),
         "themes": [public_decision(decision) for decision in theme_result.decisions],
@@ -168,7 +182,7 @@ def collect_theme_results(left: ThemeResult, right: ThemeResult) -> ThemeResult:
     """
 
     if not isinstance(left, ThemeResult) or not isinstance(right, ThemeResult):
-        raise SchemaError("Theme Collect inputs must be S1_THEME_RESULT values")
+        raise SchemaError("accumulated results must be ThemeResult values")
     merged: list[ThemeDecision] = []
     kept: dict[str, ThemeDecision] = {}
     for decision in list(left.decisions) + list(right.decisions):
@@ -188,9 +202,29 @@ def collect_theme_results(left: ThemeResult, right: ThemeResult) -> ThemeResult:
     return build_theme_result(merged, _merge_errors(left, right))
 
 
+def collect_decisions(left: DecisionPayload, right: DecisionPayload) -> DecisionPayload:
+    """Merge two option-slot payloads. Identical theme ids collapse once.
+
+    A conflicting decision for the same ``theme_id`` raises ``SchemaError``.
+    The output is one ``S1_DECISION`` with an empty slot id. It can feed
+    another Theme, another Collect, or LoRA Aggregate.
+    """
+
+    if not isinstance(left, DecisionPayload) or not isinstance(right, DecisionPayload):
+        raise SchemaError("Theme Collect inputs must be S1_DECISION values")
+    merged = collect_theme_results(left.result, right.result)
+    return DecisionPayload(
+        result=merged,
+        slot_option_id="",
+        theme_id="",
+        emitted_reason="collected",
+    )
+
+
 __all__ = [
     "AggregateOutcome",
     "aggregate_loras",
+    "collect_decisions",
     "collect_theme_results",
     "dump_report",
     "match_loras",

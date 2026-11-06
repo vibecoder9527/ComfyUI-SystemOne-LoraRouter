@@ -1,15 +1,14 @@
-"""Run one Theme node against SystemOne and append it to an upstream result.
+"""Run one theme against SystemOne and append it to an upstream result.
 
 Control flow:
 
-- ``run=disabled`` (the default) does not call SystemOne and contributes no tags.
-- ``run=enabled`` always decides. This is the explicit root switch.
-- ``run=when_upstream`` decides only when ``enable_json`` matches the upstream
-  result. Empty clauses match nothing. A missing upstream does not match.
-  Option ops (``eq``, ``neq``, ``includes_any``, ``includes_all``) require the
-  named theme's status to be ``ok``. ``skipped`` and ``answered`` read status.
-  A theme id that is absent from the upstream result makes that clause false.
-- ``match`` is ``any`` (OR, the default) or ``all`` (AND).
+- Theme Root and a downstream Theme both decide when this function runs.
+  There is no ``run`` switch and no ``enable_json``. A downstream node is
+  reached only when its caller hands over a real upstream result. Unselected
+  option slots are ``ExecutionBlocker`` values produced by ``option_slot_values``,
+  not a skip decision inside this function.
+- Settings (endpoint, key, model, noul threshold, on_error, min confidence)
+  come from a ``RouterSettings`` object.
 - ``select_mode: single`` sends one ``choice`` question. One remaining option
   skips the call and selects that option. This runner does not invent ``__none__``.
 - ``select_mode: multi`` sends one ``noul`` question per option. A score at or
@@ -18,14 +17,12 @@ Control flow:
 - An invalid choice fails. A choice whose ``confidence`` is below
   ``min_confidence`` is kept and marked ``low_confidence_kept``. There is no
   fallback option. The theme's ``none_option_id`` contributes no tags.
-- Disabled and unmatched themes append a ``skipped`` decision so a later
-  ``op: skipped`` can target them. Nested chains only see decisions already
-  in the upstream result.
 - A repeated ``theme_id`` raises ``SchemaError`` and does not call the API.
-- Invalid theme or enable JSON raises ``SchemaError`` and does not call the API.
+- Invalid theme JSON raises ``SchemaError`` and does not call the API.
 - API and decision failures raise ``ThemeError`` when ``on_error`` is
   ``raise``. ``passthrough`` appends an error decision, keeps upstream tags,
-  and does not raise.
+  and does not raise. ``option_slot_values`` then emits that result on every
+  option slot so a wired Aggregate still runs.
 """
 
 from __future__ import annotations
@@ -34,21 +31,21 @@ import json
 from dataclasses import dataclass, field
 from typing import Any
 
+from .schema.blocker import execution_blocker, is_execution_blocker
 from .schema.types import (
-    EnableClause,
-    EnableRules,
+    DecisionPayload,
+    RouterSettings,
     SchemaError,
     ThemeDecision,
     ThemeDefinition,
     ThemeResult,
+    build_settings,
     build_theme_result,
     empty_theme_result,
-    parse_enable_rules,
     parse_theme,
     public_decision,
 )
 from .systemone.client import (
-    DEFAULT_ENDPOINT,
     SystemOneClient,
     SystemOneError,
     resolve_api_key,
@@ -59,12 +56,11 @@ NOUL_BATCH = 32
 NOUL_TRUE = "提示詞明確需要或強烈暗示此選項"
 NOUL_FALSE = "提示詞不需要此選項"
 
-_ON_ERROR = {"passthrough", "raise"}
-_RUN = {"disabled", "enabled", "when_upstream"}
+_ROLES = {"root", "downstream"}
 
 
 class ThemeError(RuntimeError):
-    """The theme was enabled and ``on_error`` is ``raise``. `result` is safe to show."""
+    """The decision failed and ``on_error`` is ``raise``. ``result`` is safe to show."""
 
     def __init__(
         self,
@@ -99,59 +95,64 @@ def run_theme(
     theme_json: str | dict[str, Any],
     positive: str,
     negative: str = "",
-    run: str = "disabled",
-    enable_json: str | dict[str, Any] | None = None,
-    upstream: ThemeResult | None = None,
-    api_key: str = "",
-    api_model: str = "",
-    endpoint: str = DEFAULT_ENDPOINT,
-    noul_threshold: float = 0.5,
-    on_error: str = "passthrough",
-    min_confidence: float = 0.0,
+    settings: RouterSettings,
+    upstream: ThemeResult | DecisionPayload | None = None,
+    role: str = "root",
     client: SystemOneClient | None = None,
 ) -> ThemeOutcome:
     """Decide this theme and return the accumulated result plus a report.
 
     ``SchemaError`` propagates for bad documents, a bad upstream object, a
-    repeated theme id, and bad widget values. Those paths do not call
-    ``decide``. ``ThemeError`` propagates only when ``on_error`` is ``raise``.
+    repeated theme id, and bad settings. Those paths do not call ``decide``.
+    ``ThemeError`` propagates only when ``on_error`` is ``raise``.
+
+    ``upstream`` may be a ``ThemeResult`` or a ``DecisionPayload``. The payload
+    is unwrapped. Option-slot blocking is not done here.
     """
 
     if not isinstance(positive, str):
         raise SchemaError("positive must be a string")
     if not isinstance(negative, str):
         raise SchemaError("negative must be a string")
-    if on_error not in _ON_ERROR:
-        raise SchemaError(f"on_error must be one of: {', '.join(sorted(_ON_ERROR))}")
-    if run not in _RUN:
-        raise SchemaError(f"run must be one of: {', '.join(sorted(_RUN))}")
-    threshold = _unit_float("noul_threshold", noul_threshold)
-    confidence_floor = _unit_float("min_confidence", min_confidence)
-    endpoint = (endpoint or "").strip() or DEFAULT_ENDPOINT
-    if not (endpoint.startswith("https://") or endpoint.startswith("http://")):
-        raise SchemaError("endpoint must start with http:// or https://")
+    if role not in _ROLES:
+        raise SchemaError("role must be root or downstream")
+    if not isinstance(settings, RouterSettings):
+        raise SchemaError("settings must be an S1_SETTINGS from SystemOne Settings")
+    settings = build_settings(
+        api_key=settings.api_key,
+        api_model=settings.api_model,
+        endpoint=settings.endpoint,
+        noul_threshold=settings.noul_threshold,
+        on_error=settings.on_error,
+        min_confidence=settings.min_confidence,
+    )
+    on_error = settings.on_error
+    threshold = settings.noul_threshold
+    confidence_floor = settings.min_confidence
+    endpoint = settings.endpoint
     if upstream is None:
-        upstream = empty_theme_result()
-    elif not isinstance(upstream, ThemeResult):
-        raise SchemaError("upstream must be an S1_THEME_RESULT from a Theme or Theme Collect node")
+        if role != "root":
+            raise SchemaError("a downstream theme requires an S1_DECISION upstream")
+        upstream_result = empty_theme_result()
+    else:
+        upstream_result = _unwrap_upstream(upstream)
 
     theme = parse_theme(theme_json)
-    rules = parse_enable_rules(enable_json if enable_json is not None else {"clauses": []})
-    if upstream.get(theme.theme_id) is not None:
+    if upstream_result.get(theme.theme_id) is not None:
         raise SchemaError(
             f"theme_id {theme.theme_id!r} is already in the upstream result"
         )
 
-    key, key_source = resolve_api_key(api_key)
-    model_name = resolve_model_name(api_model)
+    key, key_source = resolve_api_key(settings.api_key)
+    model_name = resolve_model_name(settings.api_model)
     state = {"positive": positive, "negative": negative}
     notes: list[str] = []
 
     def finish(decision: ThemeDecision, *, called: bool) -> ThemeOutcome:
-        errors = list(upstream.errors)
+        errors = list(upstream_result.errors)
         if decision.error:
             errors.append(decision.error)
-        result = build_theme_result(list(upstream.decisions) + [decision], errors)
+        result = build_theme_result(list(upstream_result.decisions) + [decision], errors)
         report = _report(
             theme=theme,
             decision=decision,
@@ -162,7 +163,7 @@ def run_theme(
             model_name=model_name,
             key_source=key_source,
             client=client,
-            run=run,
+            role=role,
         )
         return ThemeOutcome(result=result, report=report)
 
@@ -183,26 +184,6 @@ def run_theme(
         if on_error == "raise":
             raise ThemeError(message, outcome.result, outcome.report)
         return outcome
-
-    active, skip_reason = _activation(run, rules, upstream)
-    if not active:
-        if skip_reason == "disabled":
-            notes.append("run=disabled: SystemOne was not called and this theme added no tags.")
-        else:
-            notes.append(
-                "enable rules did not match the upstream result; "
-                "SystemOne was not called and this theme added no tags."
-            )
-        decision = ThemeDecision(
-            theme_id=theme.theme_id,
-            status="skipped",
-            enabled=False,
-            selected=[],
-            tags=[],
-            select_mode=theme.select_mode,
-            reason=skip_reason,
-        )
-        return finish(decision, called=False)
 
     if client is None:
         client = SystemOneClient(api_key=key, endpoint=endpoint, model=model_name)
@@ -251,48 +232,56 @@ def run_theme(
         return fail(f"{type(exc).__name__}: {exc}", called=True)
 
 
-def rules_match(rules: EnableRules, upstream: ThemeResult) -> bool:
-    """Return whether `rules` enable a theme. Empty clauses match nothing."""
-
-    if not rules.clauses:
-        return False
-    results = [_clause_matches(clause, upstream) for clause in rules.clauses]
-    if rules.match == "all":
-        return all(results)
-    return any(results)
-
-
-def _activation(run: str, rules: EnableRules, upstream: ThemeResult) -> tuple[bool, str]:
-    if run == "disabled":
-        return False, "disabled"
-    if run == "enabled":
-        return True, "enabled"
-    if rules_match(rules, upstream):
-        return True, "when_upstream"
-    return False, "enable_rules_unmatched"
+def _unwrap_upstream(upstream: ThemeResult | DecisionPayload) -> ThemeResult:
+    if isinstance(upstream, DecisionPayload):
+        if not isinstance(upstream.result, ThemeResult):
+            raise SchemaError("S1_DECISION is missing an accumulated result")
+        return upstream.result
+    if isinstance(upstream, ThemeResult):
+        return upstream
+    raise SchemaError(
+        "upstream must be an S1_DECISION from a Theme option slot or Theme Collect"
+    )
 
 
-def _clause_matches(clause: EnableClause, upstream: ThemeResult) -> bool:
-    decision = upstream.get(clause.theme_id)
+def option_slot_values(theme: ThemeDefinition, result: ThemeResult) -> list[Any]:
+    """One value per option, in ``theme.options`` order.
+
+    A selected option emits a ``DecisionPayload`` that carries the full
+    accumulated result. Every selected slot of this theme shares that result,
+    so a multi selection's tags are present on each selected socket.
+
+    An error decision (``on_error=passthrough``) emits that same result on
+    every option. Blocking every slot would also block Aggregate and drop
+    upstream tags. ``none_option_id`` still contributes no tags; its slot
+    emits when that option was selected.
+
+    Any other option emits an ``ExecutionBlocker`` with message ``None``.
+    """
+
+    if not isinstance(theme, ThemeDefinition):
+        raise SchemaError("option slots need a parsed theme")
+    if not isinstance(result, ThemeResult):
+        raise SchemaError("option slots need the theme result")
+    decision = result.get(theme.theme_id)
     if decision is None:
-        return False
-    if clause.op == "skipped":
-        return decision.status == "skipped"
-    if clause.op == "answered":
-        return decision.status == "ok"
-    if decision.status != "ok":
-        return False
-    selected = set(decision.selected)
-    wanted = clause.option_ids
-    if clause.op == "eq":
-        return selected == {wanted[0]}
-    if clause.op == "neq":
-        return selected != {wanted[0]}
-    if clause.op == "includes_any":
-        return bool(selected.intersection(wanted))
-    if clause.op == "includes_all":
-        return set(wanted).issubset(selected)
-    return False
+        raise SchemaError(f"theme {theme.theme_id!r} has no decision to place on option slots")
+    selected = set(decision.selected) if decision.status == "ok" else set()
+    passthrough = decision.status == "error"
+    slots: list[Any] = []
+    for option in theme.options:
+        if passthrough or option.option_id in selected:
+            slots.append(
+                DecisionPayload(
+                    result=result,
+                    slot_option_id=option.option_id,
+                    theme_id=theme.theme_id,
+                    emitted_reason="passthrough_error" if passthrough else "selected",
+                )
+            )
+        else:
+            slots.append(execution_blocker(None))
+    return slots
 
 
 def _run_single(client, state, theme: ThemeDefinition, min_confidence):
@@ -420,11 +409,11 @@ def _report(
     model_name: str,
     key_source: str,
     client: SystemOneClient | None,
-    run: str,
+    role: str,
 ) -> dict[str, Any]:
     return {
         "theme_id": theme.theme_id,
-        "run": run,
+        "role": role,
         "status": decision.status,
         "enabled": decision.enabled,
         "selected": list(decision.selected),
@@ -456,6 +445,7 @@ __all__ = [
     "ThemeError",
     "ThemeOutcome",
     "dump_report",
-    "rules_match",
+    "is_execution_blocker",
+    "option_slot_values",
     "run_theme",
 ]

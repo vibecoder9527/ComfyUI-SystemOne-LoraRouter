@@ -1,18 +1,17 @@
-// Visual editor modal for LoRA Library and Theme.
+// Visual editor modal for LoRA Library, Theme Root, and Theme.
 // ComfyUI loads this module because __init__.py exports WEB_DIRECTORY = "./js".
-// The modal edits the node widgets. Invalid drafts are not written.
+// The modal edits theme_json or library_json. Invalid drafts are not written.
+// Prompts are sockets. Positive is the input above negative. Prompts are not stored in theme_json.
 
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import {
-  ENABLE_MATCH,
-  ENABLE_OPS,
-  RUN_MODES,
   SELECT_MODES,
   assignLoraIds,
   assignThemeDocument,
+  planOptionOutputs,
   planThemeIds,
-  blankClause,
+  relinkOptionSlots,
   blankLora,
   blankOption,
   commitModel,
@@ -28,35 +27,13 @@ const BUTTON_LABEL = "Open visual editor";
 
 const NODE_SPECS = {
   S1LoraLibrary: { kind: "lora", widget: "library_json", title: "LoRA Library" },
-  S1Theme: {
-    kind: "theme",
-    widget: "theme_json",
-    title: "Theme",
-    prompts: true,
-    enableWidget: "enable_json",
-    runWidget: "run",
-  },
+  S1ThemeRoot: { kind: "theme", widget: "theme_json", title: "Theme Root" },
+  S1Theme: { kind: "theme", widget: "theme_json", title: "Theme" },
 };
 
 const FACTORIES = {
   lora: blankLora,
   option: blankOption,
-  clause: blankClause,
-};
-
-const OP_HINT = {
-  eq: "Upstream selection equals this one option id.",
-  neq: "Upstream answered and the selection is not this one option id. A skip does not match.",
-  includes_any: "Upstream selection intersects these option ids.",
-  includes_all: "Upstream selection contains every option id.",
-  skipped: "That upstream theme was skipped. No option ids.",
-  answered: "That upstream theme returned a selection. No option ids.",
-};
-
-const RUN_HINT = {
-  disabled: "Disabled: SystemOne is not called and this theme adds no tags.",
-  enabled: "Enabled: this theme always decides. Stored enable rules are ignored.",
-  when_upstream: "When upstream: this theme decides only if the clauses match the upstream result.",
 };
 
 const CSS = `
@@ -193,15 +170,10 @@ const state = {
   kind: null,
   widgetName: null,
   model: null,
-  enable: null,
   raw: "",
-  enableRaw: "",
   message: "",
   tone: "",
   openLoraBrowse: "",
-  positive: "",
-  negative: "",
-  run: "disabled",
   clean: true,
   invalidPaths: [],
   writeTimer: null,
@@ -364,8 +336,8 @@ function listButtons(listPath, index, length, scope) {
   return [up, down, button("Remove", "remove", { list: listPath, index, scope })];
 }
 
-function scopedModel(scope) {
-  return scope === "enable" ? state.enable : state.model;
+function scopedModel() {
+  return state.model;
 }
 
 function getByPath(root, path) {
@@ -380,26 +352,12 @@ function setPath(root, path, value) {
   cursor[parts[parts.length - 1]] = value;
 }
 
-function syncPromptsFromDom() {
-  if (!rootEl) return;
-  rootEl.querySelectorAll("[data-prompt]").forEach((input) => {
-    if (input.dataset.prompt === "positive") state.positive = input.value;
-    else if (input.dataset.prompt === "negative") state.negative = input.value;
-  });
-  const run = rootEl.querySelector("[data-run='1']");
-  if (run) state.run = run.value;
-}
-
 function syncFromDom() {
   if (!rootEl) return;
-  syncPromptsFromDom();
   const raw = rootEl.querySelector("[data-raw='theme']");
   if (raw) state.raw = raw.value;
-  const enableRaw = rootEl.querySelector("[data-raw='enable']");
-  if (enableRaw) state.enableRaw = enableRaw.value;
   rootEl.querySelectorAll("[data-path]").forEach((input) => {
-    const scope = input.dataset.scope === "enable" ? "enable" : "model";
-    const root = scope === "enable" ? state.enable : state.model;
+    const root = state.model;
     if (!root || input.readOnly) return;
     const path = input.dataset.path;
     if (input.dataset.kind === "tags" || input.dataset.kind === "ids") setPath(root, path, splitList(input.value));
@@ -668,7 +626,12 @@ function renderThemeFields() {
   );
   bodyEl.append(
     hint(
-      "Enable rules are not rewritten when a theme id is assigned. upstream theme_id names another theme. A loaded workflow that repeats a theme_id keeps both saved documents and shows a theme_id conflict.",
+      "Positive is the input above negative. Prompts are not stored in theme_json. Wire them from prompt nodes. This editor writes theme_json only. Option order is output-slot order.",
+    ),
+  );
+  bodyEl.append(
+    hint(
+      "A loaded workflow that repeats a theme_id keeps both saved documents and shows a theme_id conflict. A decision chain still rejects a repeated theme_id.",
     ),
   );
   const children = [
@@ -687,90 +650,6 @@ function renderThemeFields() {
   bodyEl.append(card(title, [], children));
 }
 
-function renderClause(clause, index, length) {
-  const path = `clauses.${index}`;
-  const bare = clause.op === "skipped" || clause.op === "answered";
-  const children = [
-    field("upstream theme_id", `${path}.theme_id`, clause.theme_id || "", { mono: true, scope: "enable" }),
-    field("op", `${path}.op`, clause.op || "includes_any", {
-      select: ENABLE_OPS,
-      rerender: "op",
-      scope: "enable",
-    }),
-  ];
-  if (OP_HINT[clause.op]) children.push(hint(OP_HINT[clause.op]));
-  if (!bare) {
-    children.push(
-      field("option_ids", `${path}.option_ids`, (clause.option_ids || []).join(", "), {
-        kind: "ids",
-        mono: true,
-        scope: "enable",
-      }),
-    );
-  }
-  return card(`Clause ${index + 1}`, listButtons("clauses", index, length, "enable"), children);
-}
-
-function renderEnableFields() {
-  const enable = state.enable;
-  const box = el("section", "s1-card");
-  box.append(el("h3", null, "Enable when upstream"));
-  box.append(
-    hint(
-      "Clauses name an upstream theme_id and its option ids. match any is OR. match all is AND. An empty list matches nothing.",
-    ),
-  );
-  box.append(field("match", "match", enable.match || "any", { select: ENABLE_MATCH, scope: "enable" }));
-  (enable.clauses || []).forEach((clause, index) => {
-    box.append(renderClause(clause, index, enable.clauses.length));
-  });
-  box.append(button("Add clause", "add", { list: "clauses", factory: "clause", scope: "enable" }));
-  bodyEl.append(box);
-}
-
-function promptField(name, label, value) {
-  const wrap = el("label", "s1-field");
-  wrap.append(el("span", "s1-label", label));
-  const area = document.createElement("textarea");
-  area.rows = 4;
-  area.value = value ?? "";
-  area.dataset.prompt = name;
-  wrap.append(area);
-  return wrap;
-}
-
-function renderPrompts() {
-  const box = el("section", "s1-card");
-  box.append(el("h3", null, "Prompts"));
-  box.append(
-    hint("Positive, then negative. A valid edit writes these widgets with theme_json. They are not stored inside theme_json."),
-  );
-  box.append(promptField("positive", "Positive prompt", state.positive));
-  box.append(promptField("negative", "Negative prompt", state.negative));
-  bodyEl.append(box);
-}
-
-function renderRun() {
-  const box = el("section", "s1-card");
-  box.append(el("h3", null, "Run"));
-  const wrap = el("label", "s1-field");
-  wrap.dataset.mark = "run";
-  wrap.append(el("span", "s1-label", "run"));
-  const select = document.createElement("select");
-  select.dataset.run = "1";
-  for (const choice of RUN_MODES) {
-    const option = document.createElement("option");
-    option.value = choice;
-    option.textContent = choice;
-    select.append(option);
-  }
-  select.value = RUN_MODES.includes(state.run) ? state.run : "disabled";
-  wrap.append(select);
-  box.append(wrap);
-  box.append(hint(RUN_HINT[select.value] || RUN_HINT.disabled));
-  bodyEl.append(box);
-}
-
 function renderRaw(which, text, blurb) {
   const area = document.createElement("textarea");
   area.className = "s1-raw";
@@ -781,7 +660,11 @@ function renderRaw(which, text, blurb) {
 }
 
 function renderEmpty() {
-  bodyEl.append(hint("Open visual editor on a LoRA Library or Theme node. This modal edits that node's JSON widgets."));
+  bodyEl.append(
+    hint(
+      "Open visual editor on a LoRA Library, Theme Root, or Theme node. This modal edits that node's JSON widget.",
+    ),
+  );
 }
 
 function renderBody() {
@@ -792,30 +675,17 @@ function renderBody() {
     applyInvalidMarks();
     return;
   }
-  if (state.kind === "theme") {
-    renderPrompts();
-    renderRun();
-  }
   if (!state.model) {
     renderRaw(
       "theme",
       state.raw,
-      "This JSON did not fit the form. Fix it here, then choose Try form. A successful parse writes the node. Invalid JSON stays here and is not written.",
+      "This JSON did not fit the form. Fix it here, then choose Try form. A successful parse writes theme_json. Invalid JSON stays here and is not written.",
     );
     applyInvalidMarks();
     return;
   }
   if (state.kind === "lora") renderLoras();
-  else {
-    renderThemeFields();
-    if (!state.enable) {
-      renderRaw(
-        "enable",
-        state.enableRaw,
-        "enable_json did not fit the form. Invalid enable JSON is not written, and theme_json is left unchanged too.",
-      );
-    } else renderEnableFields();
-  }
+  else renderThemeFields();
   applyInvalidMarks();
 }
 
@@ -881,24 +751,14 @@ function loadNode(node) {
   state.kind = spec?.kind || null;
   state.widgetName = spec?.widget || null;
   state.model = null;
-  state.enable = null;
   state.raw = "";
-  state.enableRaw = "";
   state.openLoraBrowse = "";
-  state.positive = "";
-  state.negative = "";
-  state.run = "disabled";
   state.clean = false;
   state.invalidPaths = [];
   if (!spec) {
     setMessage("This node has no visual editor.", "error");
     renderAll();
     return;
-  }
-  if (spec.prompts) {
-    state.positive = widgetText(findWidget(node, "positive"));
-    state.negative = widgetText(findWidget(node, "negative"));
-    state.run = widgetText(findWidget(node, spec.runWidget)) || "disabled";
   }
   const widget = findWidget(node, spec.widget);
   if (!widget) {
@@ -916,20 +776,6 @@ function loadNode(node) {
     return;
   }
   state.model = parsed.model;
-  if (spec.kind === "theme") {
-    const enableWidget = findWidget(node, spec.enableWidget);
-    state.enableRaw = enableWidget ? widgetText(enableWidget) : "";
-    const enableParsed = parseEditorDocument("enable", state.enableRaw);
-    if (!enableParsed.ok) {
-      state.enable = null;
-      state.clean = false;
-      state.invalidPaths = ["__enable_raw__"].concat(fieldPathsFromError(enableParsed.error));
-      setMessage(enableParsed.error, "error");
-      renderAll();
-      return;
-    }
-    state.enable = enableParsed.model;
-  }
   state.clean = true;
   state.invalidPaths = [];
   announceThemeConflict(node);
@@ -953,7 +799,7 @@ function applyInvalidMarks() {
     wrap.classList.toggle("s1-invalid", Boolean(path) && marks.has(path));
   });
   rootEl.querySelectorAll("textarea.s1-raw").forEach((area) => {
-    const which = area.dataset.raw === "enable" ? "__enable_raw__" : "__raw__";
+    const which = "__raw__";
     area.classList.toggle("s1-invalid", marks.has(which));
   });
 }
@@ -1009,14 +855,6 @@ function liveWrite() {
     }
     state.model = parsed.model;
   }
-  if (state.kind === "theme" && !state.enable) {
-    const parsed = parseEditorDocument("enable", state.enableRaw);
-    if (!parsed.ok) {
-      rejectDraft(parsed.error, ["__enable_raw__"].concat(fieldPathsFromError(parsed.error)));
-      return;
-    }
-    state.enable = parsed.model;
-  }
   const beforeIds = idSignature();
   const result = commitModel(state.kind, state.model);
   if (!result.ok) {
@@ -1030,38 +868,19 @@ function liveWrite() {
     applyInvalidMarks();
     return;
   }
-  let enableResult = null;
-  if (state.kind === "theme") {
-    enableResult = commitModel("enable", state.enable);
-    if (!enableResult.ok) {
-      state.clean = false;
-      state.invalidPaths = fieldPathsFromError(enableResult.error);
-      setMessage(enableResult.error, "error");
-      applyInvalidMarks();
-      return;
-    }
-  }
   state.invalidPaths = [];
   state.writing = true;
   try {
     if (widgetText(widget) !== result.json) writeWidget(state.node, widget, result.json);
-    if (state.kind === "theme") {
-      const spec = specFor(state.node);
-      writeNamed(state.node, spec.enableWidget, enableResult.json);
-      writeNamed(state.node, "positive", state.positive ?? "");
-      writeNamed(state.node, "negative", state.negative ?? "");
-      writeNamed(state.node, spec.runWidget, state.run || "disabled");
-    }
   } finally {
     state.writing = false;
   }
   state.raw = result.json;
-  if (enableResult) state.enableRaw = enableResult.json;
   state.clean = true;
   const idsChanged = idSignature() !== beforeIds;
   state.model = result.model;
-  if (enableResult) state.enable = enableResult.model;
   announceThemeConflict(state.node);
+  if (state.kind === "theme") syncOptionOutputs(state.node);
   if (!hadModel || idsChanged) {
     renderAll();
     return;
@@ -1076,16 +895,7 @@ function pollWidgets() {
   const widget = findWidget(state.node, state.widgetName);
   if (!widget) return;
   const text = widgetText(widget);
-  let extra = false;
-  if (state.kind === "theme") {
-    const spec = specFor(state.node);
-    const enableText = widgetText(findWidget(state.node, spec.enableWidget));
-    const positive = widgetText(findWidget(state.node, "positive"));
-    const negative = widgetText(findWidget(state.node, "negative"));
-    const run = widgetText(findWidget(state.node, spec.runWidget));
-    extra = enableText !== state.enableRaw || positive !== state.positive || negative !== state.negative || run !== state.run;
-  }
-  if (text !== state.raw || extra) loadNode(state.node);
+  if (text !== state.raw) loadNode(state.node);
 }
 
 function ensurePoll() {
@@ -1114,8 +924,7 @@ function onClick(event) {
     scheduleLiveWrite();
     return;
   }
-  const scope = target.dataset.scope === "enable" ? "enable" : "model";
-  const root = scopedModel(scope);
+  const root = scopedModel();
   if (!root) return;
   if (act === "browse-loras") {
     syncFromDom();
@@ -1131,7 +940,7 @@ function onClick(event) {
     if (Array.isArray(list) && factory) {
       list.push(factory());
       if (state.kind === "lora") assignLoraIds(state.model);
-      if (state.kind === "theme" && scope === "model") assignThemeDocument(state.model);
+      if (state.kind === "theme") assignThemeDocument(state.model);
     }
     renderBody();
     scheduleLiveWrite();
@@ -1146,7 +955,7 @@ function onClick(event) {
     if (act === "up" && index > 0) list.splice(index - 1, 0, list.splice(index, 1)[0]);
     if (act === "down" && index < list.length - 1) list.splice(index + 1, 0, list.splice(index, 1)[0]);
     if (state.kind === "lora") assignLoraIds(state.model);
-    if (state.kind === "theme" && scope === "model") assignThemeDocument(state.model);
+    if (state.kind === "theme") assignThemeDocument(state.model);
     renderBody();
     scheduleLiveWrite();
   }
@@ -1160,24 +969,12 @@ function onInput(event) {
     return;
   }
   if (input.dataset.raw != null) {
-    if (input.dataset.raw === "enable") state.enableRaw = input.value;
-    else state.raw = input.value;
+    state.raw = input.value;
     if (input.dataset.raw === "theme") state.model = null;
-    if (input.dataset.raw === "enable") state.enable = null;
     scheduleLiveWrite();
     return;
   }
-  if (input.dataset.prompt === "positive" || input.dataset.prompt === "negative") {
-    state[input.dataset.prompt] = input.value;
-    scheduleLiveWrite();
-    return;
-  }
-  if (input.dataset.run != null) {
-    state.run = input.value;
-    scheduleLiveWrite();
-    return;
-  }
-  const root = input.dataset.scope === "enable" ? state.enable : state.model;
+  const root = state.model;
   if (!root || !input.dataset.path || input.readOnly) return;
   if (input.dataset.kind === "tags" || input.dataset.kind === "ids") setPath(root, input.dataset.path, splitList(input.value));
   else if (input.type === "checkbox") setPath(root, input.dataset.path, input.checked);
@@ -1193,32 +990,14 @@ function onChange(event) {
     return;
   }
   if (input.dataset.raw != null) {
-    if (input.dataset.raw === "enable") state.enableRaw = input.value;
-    else {
-      state.raw = input.value;
-      state.model = null;
-    }
+    state.raw = input.value;
+    state.model = null;
     scheduleLiveWrite();
     return;
   }
-  if (input.dataset.prompt === "positive" || input.dataset.prompt === "negative") {
-    state[input.dataset.prompt] = input.value;
-    scheduleLiveWrite();
-    return;
-  }
-  if (input.dataset.run != null) {
-    state.run = input.value;
-    renderBody();
-    scheduleLiveWrite();
-    return;
-  }
-  const root = input.dataset.scope === "enable" ? state.enable : state.model;
+  const root = state.model;
   if (!root || !input.dataset.path || input.readOnly) return;
   syncFromDom();
-  if (input.dataset.rerender === "op") {
-    const clause = getByPath(state.enable, input.dataset.path.replace(/\.op$/, ""));
-    if (clause && (clause.op === "skipped" || clause.op === "answered")) clause.option_ids = [];
-  }
   if (input.dataset.rerender) renderBody();
   scheduleLiveWrite();
 }
@@ -1426,7 +1205,6 @@ function applyThemePlan(nodes) {
       label: themeNodeLabel(node),
       origin: originForTheme(node),
       themeJson: widgetText(findWidget(node, "theme_json")),
-      enableJson: widgetText(findWidget(node, "enable_json")),
     };
   });
   const plan = planThemeIds(entries);
@@ -1450,15 +1228,30 @@ function applyThemePlan(nodes) {
   return plan;
 }
 
+// Rename and hide option sockets to match theme_json. Invalid JSON leaves them.
+// This does not call reconcileThemeIds.
+function syncOptionOutputs(node) {
+  if (!isThemeNode(node)) return;
+  const plan = planOptionOutputs(widgetText(findWidget(node, "theme_json")));
+  if (!plan.ok || !Array.isArray(plan.slots)) return;
+  relinkOptionSlots(node, plan.slots);
+  fitNode(node);
+  node.graph?.setDirtyCanvas?.(true, true);
+}
+
 // Number theme ids on each loaded graph. Widget values are what queue serializes,
 // so this runs before graphToPrompt reads them, not only when the modal opens.
 // A nested subgraph is its own id space. Restored clashes are flagged and not
-// rewritten. Enable widgets are not written.
+// rewritten. Option sockets are synced after the id write.
 function reconcileThemeIds() {
   if (reconcilingThemes) return null;
   reconcilingThemes = true;
   try {
-    const plans = themeGroups().map(applyThemePlan);
+    const plans = themeGroups().map((nodes) => {
+      const plan = applyThemePlan(nodes);
+      for (const node of nodes) syncOptionOutputs(node);
+      return plan;
+    });
     if (state.node && editorVisible()) announceThemeConflict(state.node);
     return plans;
   } finally {

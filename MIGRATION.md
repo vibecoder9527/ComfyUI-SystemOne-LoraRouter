@@ -1,84 +1,110 @@
-# Migration from theme library and theme sequence
+# Migration
 
-This package no longer registers `S1ThemeLibrary` or `S1ThemeSequence`. Workflows that used those nodes do not load the old classes. The runtime parsers reject `lora_bindings`, `fallback_option_id`, and a `themes` list. There is no compatibility mode that still executes a sequence.
+Positive is the input above negative. This break removes `run`, `enable_json`, `theme_result`, and `S1_THEME_RESULT`. API widgets move to **SystemOne Settings** (`S1Settings`). Theme Root (`S1ThemeRoot`) always decides. A downstream Theme (`S1Theme`) takes one parent option slot on `upstream`. Outputs are `S1_DECISION` option slots, not one `theme_result`.
 
-`schema/migrate.py` rewrites JSON. It does not register nodes and it does not call SystemOne. Run it while editing, then paste the results onto Theme nodes and the LoRA Library.
+`schema/migrate.py` rewrites JSON. It does not register nodes and it does not call SystemOne.
 
-Old example documents are kept in `examples/legacy/` (`theme_library.*.json`, `sequence.*.json`, and the library file from that era). The active examples under `examples/` are the new documents.
+`S1ThemeCollect` stays. It now merges two `S1_DECISION` payloads. It is not removed. Option-slot branching replaces enable trees. Collect is only the fan-in, and only when both inputs actually emit. An `ExecutionBlocker` on either input makes ComfyUI skip Collect, so Collect cannot OR two slots.
 
-## What you build instead
+## What a 51f1904 workflow loses
 
-| Old | New |
+| Removed | Replacement |
 | --- | --- |
-| `S1ThemeLibrary` / `S1_THEME_LIB` | One `S1Theme` node per theme. `theme_json` is one theme object. |
-| `S1ThemeSequence` / `sequence_json` | Chain Theme nodes. `run=enabled` replaces a step that started enabled. `run=when_upstream` plus `enable_json` replaces `enable_step`. |
-| Option `lora_bindings` | Option `tags`. LoRA Aggregate matches tags on `S1LoraLibrary` entries. |
-| Per-binding `strength_model` / `strength_clip` | Dropped. Aggregate uses the library strengths and applies each `lora_id` once. |
-| `strength_conflict` (`max`, `sum_clamp_1`, `last_wins`) | Removed. One library strength, one apply. |
-| `fallback_option_id` | Removed. A low-confidence choice is kept. `none_option_id` still means "this option contributes no tags". |
-| `rewrite_options`, `rewrite_instructions`, `set_select_mode` | Not migrated into behavior. Edit the Theme document by hand. `plan_sequence` warns. |
-| `disable_step` | Not migrated. A theme does not turn off conditionally. `plan_sequence` warns. |
-| Sidebar tab **S1 Editors** | Removed. **Open visual editor** opens a modal on the node. |
+| Theme `api_key`, `api_model`, `endpoint`, `noul_threshold`, `on_error`, `min_confidence` | One `S1Settings` node, wired into `settings` |
+| `positive` / `negative` widgets | `STRING` sockets. Positive is the input above negative. Not stored in `theme_json` |
+| `run=enabled` | `S1ThemeRoot`. It always decides. Leftover `enable_json` clauses are ignored |
+| `run=when_upstream` plus `enable_json` | `S1Theme` plus one wire from the parent option slot into `upstream` |
+| `run=disabled` | The node is dropped. Nothing is left on the canvas for it |
+| `theme_result` / `S1_THEME_RESULT` | The option slot whose `option_id` you care about, type `S1_DECISION` |
+| `enable_json` on the node | Gone. `parse_enable_rules` remains for the helper only |
+| Output 0 as the whole theme result | Output 0 is option 0. Do not keep the old link |
 
-`S1LoraLibrary` stays. Add `tags` to each entry you want Aggregate to select. The file name and the strengths stay on the entry. Manual ids stay. Blank ids are filled with `lora_N`, `theme_N`, or `option_N` by the editor and by the migration helper, not by the runtime parser.
+`none_option_id` is unchanged: that option contributes no tags when it is chosen, and its slot still emits.
 
-## Theme library to theme documents
+`migrate_router_graph` reads a ComfyUI API prompt (`id -> {class_type, inputs}`) or `{"nodes": [ ... ]}` with flat widget fields. It returns a plan: `settings_nodes`, `nodes`, `wires`, `dropped`, `warnings`, `removed`, and `limits`. It is not a workflow you can queue unchanged. Positive and negative are copied as text so you can paste them onto prompt nodes, positive first. The API key is copied onto the settings inputs and is not repeated in warnings.
 
 ```python
 import json
-from schema.migrate import migrate_theme_library, retag_lora_library
+from schema.migrate import migrate_router_graph
+
+plan = migrate_router_graph(json.load(open("my_51f1904_prompt.json", encoding="utf-8")))
+print(plan["removed"])
+for node in plan["settings_nodes"]:
+    print(node["id"], node["inputs"]["endpoint"], node["inputs"]["on_error"])
+for wire in plan["wires"]:
+    print(wire)
+```
+
+Rules for that plan:
+
+- Themes that share the same six API fields share one `S1Settings` node (`settings`, then `settings_2`, …). A dropped theme does not create a settings node.
+- `run=enabled` becomes `S1ThemeRoot`. If `enable_json` had clauses, the warning says `enable_json` is ignored.
+- `run=when_upstream` becomes `S1Theme`. One clause whose op is `eq` or `includes_any` and whose `option_ids` has exactly one id becomes `upstream: [parent_id, option_index]` when that option exists on the parent's `theme_json` and the clause's `theme_id` matches the parent. The old link `[parent, 0]` was `theme_result`, not "option 0", and it is not reused as a slot index by itself.
+- Several clauses, `includes_any` with more than one id, `includes_all`, `neq`, `skipped`, and `answered` do not become one wire. The warning tells you to place one Theme copy per option, or to wire the slot yourself. A downstream theme has one `upstream` socket.
+- `run=disabled` or an unknown `run` drops the node.
+- LoRA Aggregate's `theme_result` input is removed. The warning says output 0 is no longer the whole theme result and that you should connect `decision` to the option slot. The helper does not guess which slot.
+- Theme Collect links that used to come from an `S1Theme` `theme_result` are cleared, with a warning to retarget them at an option slot.
+- `limits.max_option_outputs` is 32. `limits.report_output_index` is 32.
+
+`removed` from `migrate_router_graph` names `run`, `enable_json`, `theme_result`, `S1_THEME_RESULT`, and each old Theme API widget.
+
+Active wiring sketch: `examples/wiring.art_and_character.json`. Old enable documents are parked in `examples/legacy/enable.empty.json` and `examples/legacy/enable.when_anime.json`.
+
+## Older library and sequence documents
+
+`S1ThemeLibrary` and `S1ThemeSequence` are still not registered. The runtime parsers reject `lora_bindings`, `fallback_option_id`, and a `themes` list. There is no compatibility mode that executes a sequence.
+
+| Old | New |
+| --- | --- |
+| `S1ThemeLibrary` / `S1_THEME_LIB` | One Theme Root or Theme per theme. `theme_json` is one theme object |
+| `S1ThemeSequence` / `sequence_json` | `plan_sequence` chooses `S1ThemeRoot` or `S1Theme`. Wiring an option slot replaces `enable_step` |
+| Option `lora_bindings` | Option `tags`. LoRA Aggregate matches tags on `S1LoraLibrary` entries |
+| Per-binding strengths | Dropped. Aggregate uses the library strengths and applies each `lora_id` once |
+| `strength_conflict` | Removed. One library strength, one apply |
+| `fallback_option_id` | Removed. A low-confidence choice is kept. `none_option_id` still means "this option contributes no tags" |
+| `rewrite_options`, `rewrite_instructions`, `set_select_mode` | Not migrated. `plan_sequence` warns |
+| `disable_step` | The node is omitted. A theme does not turn off conditionally |
+| Sidebar tab **S1 Editors** | Removed. **Open visual editor** opens a modal on the node. There is no Apply to node button |
+
+```python
+import json
+from schema.migrate import migrate_theme_library, plan_sequence, retag_lora_library
 
 library = json.load(open("examples/legacy/theme_library.minimal.json", encoding="utf-8"))
 migrated = migrate_theme_library(library)
 for item in migrated:
     print(item.notes)
     print(json.dumps(item.document, ensure_ascii=False, indent=2))
-```
 
-Rules:
-
-- A library's `themes` list becomes one document per theme. A single theme object is accepted too. `migrate_theme_document` requires exactly one.
-- Bindings and no `tags`: the tags become the bound `lora_id` values, in order, without duplicates. The note tells you to retag the LoRA library or set matching tags yourself.
-- Bindings and existing `tags`: the tags are kept and the bindings are dropped, with a note.
-- A binding strength is dropped, with a note. It is not copied onto the library.
-- `fallback_option_id` is dropped, with a note, and is not applied.
-- Manual `theme_id` and `option_id` values are kept. A blank id is filled. The result is passed through `parse_theme`. If the old theme is still invalid (empty title, bad `select_mode`, `none_option_id` pointing at a missing option), migration raises `SchemaError` instead of emitting a document.
-
-`examples/theme.art_style.json` and `examples/theme.character_pack.json` are the hand-written form of the old minimal library: tags are `style_anime`, `style_realistic`, `char_a`, and `char_b`, not the raw `lora_id` strings, and the library strengths are `0.8/0.8`, `0.7/0.7`, and `0.9/0.9`. The old binding override `0.85` on `style_anime_v3` is not used.
-
-## Point the library at those tags
-
-```python
 lora = json.load(open("examples/lora_library.minimal.json", encoding="utf-8"))
 updated, notes = retag_lora_library(lora, [item.document for item in migrated])
-```
 
-`retag_lora_library` appends a tag onto a library entry when an option tag equals that entry's `lora_id` and the tag is not already there. It does not rewrite strengths or ids. A tag that equals no `lora_id` is left on the option and mentioned in the notes. The active minimal library already uses descriptive tags (`style_anime`, not `style_anime_v3`), so retag will not add those descriptive tags for you. Set them on the entries, as in `examples/lora_library.minimal.json`.
-
-## Sequence to a run plan
-
-```python
-from schema.migrate import plan_sequence
 plan = plan_sequence(open("examples/legacy/sequence.minimal.json", encoding="utf-8").read())
+for node in plan["nodes"]:
+    print(node["theme_id"], node["class_type"], node["upstream_wire"], node["dropped"])
 ```
 
-`plan_sequence` is advisory. It does not execute steps.
+`plan_sequence` is advisory.
 
-- `enabled_by_default: true` and no `disable_step` becomes `run: enabled`. Enable clauses are not required for that node. If the step also had `enable_step` actions, the plan warns that those clauses are not what turns the theme on.
-- A step that starts disabled and has an `enable_step` action becomes `run: when_upstream`. Each `when` becomes a clause. The clause's `theme_id` is the referenced step's `theme_id`, not the old `step_id`.
-- A step that starts disabled and has no `enable_step` becomes `run: disabled`.
-- `rewrite_*` and `disable_step` become warnings.
-- The same `theme_id` on more than one step is a warning. A result chain still requires unique theme ids at runtime. The editor assigns a free `theme_N` when you add or duplicate a Theme, and it leaves a unique saved id in place. Two restored nodes that already share an id are reported and not rewritten, so a saved enable rule is not moved.
-- The plan's `removed` list names `S1ThemeLibrary`, `S1ThemeSequence`, `lora_bindings`, `fallback_option_id`, `strength_conflict`, and `sequence_json`.
+- `enabled_by_default: true` and no `disable_step` becomes `class_type: S1ThemeRoot`. Enable clauses are not wires on a root. The plan warns that they are ignored.
+- A step that starts disabled and has one `enable_step` action that names a single option becomes `class_type: S1Theme` with `upstream_wire` `{theme_id, option_id, op}`. The clause's `theme_id` is the referenced step's `theme_id`, not the old `step_id`.
+- Several options, several clauses, or an op that is not `eq` / `includes_any` of one id do not become one wire. The warning says so. `upstream_wire` is null.
+- A step that cannot become a root or a single option wire is `dropped`, with `class_type: null`. That includes `disable_step` and a step that started disabled with no `enable_step`.
+- `rewrite_*` actions are warnings.
+- The same `theme_id` on more than one step is a warning. The editor assigns a free `theme_N` when you add or duplicate a theme node and leaves a unique saved id in place. Two restored nodes that already share an id are reported and not rewritten. A decision chain still rejects a repeated theme_id.
+- `removed` names `S1ThemeLibrary`, `S1ThemeSequence`, `lora_bindings`, `fallback_option_id`, `strength_conflict`, `sequence_json`, `run`, `enable_json`, `theme_result`, and `S1_THEME_RESULT`.
 
-For `examples/legacy/sequence.minimal.json` the plan is: art style `run=enabled`, character pack `run=when_upstream` with `includes_any` / `anime` on theme `art_style`. The `rewrite_instructions` and `rewrite_options` actions are warnings. The character theme in `examples/theme.character_pack.json` still lists both `waifu_a` and `waifu_b`. The old rewrite that dropped `waifu_b` is not applied. Delete that option yourself if you still want it gone.
+For `examples/legacy/sequence.minimal.json` the plan is: art style is Theme Root, character pack is Theme with `includes_any` / `anime` on theme `art_style`. The `rewrite_instructions` and `rewrite_options` actions are warnings. The character theme in `examples/theme.character_pack.json` still lists both `waifu_a` and `waifu_b`. Delete `waifu_b` yourself if you still want it gone.
 
-Paste each planned `enable_json` onto the matching Theme node and set `run`. Connect `theme_result` to the next theme's `upstream`, then connect the last result to `S1LoraAggregate` (LoRA Aggregate) with the library and MODEL. `S1ThemeCollect` keeps one copy of a shared ancestor when the decisions match, and raises when the same theme id carries two different decisions. A chain of Theme nodes still requires each running theme to have its own id.
+Library migration rules are unchanged: bindings become tags when the option had no tags; existing tags win; binding strengths are dropped; blank ids are filled; `parse_theme` still has to accept the result.
 
-## Checks after you paste
+`retag_lora_library` appends a tag onto a library entry when an option tag equals that entry's `lora_id` and the tag is not already there. The active minimal library already uses descriptive tags (`style_anime`, not `style_anime_v3`). Set those on the entries, as in `examples/lora_library.minimal.json`.
 
-- Every calling theme has an API key widget or `SYSTEM_ONE_API_KEY`. Disabled themes do not call.
-- Theme ids are unique along a chain.
-- Option tags and library tags are the same strings. Matching is case-sensitive.
-- `none_option_id` still names an option, and that option contributes no tags.
-- Positive stays above negative on each Theme.
+## Checks after you rewire
+
+- Settings is connected to every Theme Root and Theme that should call SystemOne.
+- Positive is the input above negative on each theme. Prompts are not inside `theme_json`.
+- The child Theme's `upstream` comes from the parent option slot, not from output 0 of an old theme and not from `report_json` (index 32).
+- Aggregate's `decision` comes from a slot you expect to emit, or from Theme Collect of two emitting branches.
+- You did not leave a second copy of the API widgets on the theme.
+- A theme id is unique along any chain you will queue. `none_option_id` is still an option of that theme when you set it.

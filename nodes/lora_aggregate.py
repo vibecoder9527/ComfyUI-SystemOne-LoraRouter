@@ -22,11 +22,13 @@ class S1LoraAggregate:
         "Tags, theme decisions, matched LoRAs, apply errors, and notes.",
     )
     DESCRIPTION = (
-        "Match S1_LORA_LIB tags to the tags on an S1_THEME_RESULT. "
+        "Match S1_LORA_LIB tags to the tags on an S1_DECISION. "
+        "Wire decision from a selected option slot or from Theme Collect. "
         "A LoRA matches when any of its tags was contributed and enabled_default is true. "
         "Each lora_id is applied once, in lora_id order, with its library strengths. "
-        "on_error=passthrough returns the input MODEL and CLIP when the inputs are "
-        "unusable or a weight file fails. Theme errors already stored on the result "
+        "on_error here is weight loading, not the theme's SystemOne on_error. "
+        "passthrough returns the input MODEL and CLIP when the inputs are unusable "
+        "or a weight file fails. Theme errors already stored on the decision "
         "do not cancel tags that upstream themes contributed."
     )
 
@@ -36,7 +38,13 @@ class S1LoraAggregate:
             "required": {
                 "model": ("MODEL",),
                 "lora_lib": ("S1_LORA_LIB", {"forceInput": True}),
-                "theme_result": ("S1_THEME_RESULT", {"forceInput": True}),
+                "decision": (
+                    "S1_DECISION",
+                    {
+                        "forceInput": True,
+                        "tooltip": "Selected option slot or Theme Collect. Carries accumulated tags.",
+                    },
+                ),
             },
             "optional": {
                 "clip": ("CLIP",),
@@ -44,13 +52,13 @@ class S1LoraAggregate:
             },
         }
 
-    def apply(self, model, lora_lib, theme_result, clip=None, on_error="passthrough"):
+    def apply(self, model, lora_lib, decision, clip=None, on_error="passthrough"):
         try:
             outcome = aggregate_loras(
                 model=model,
                 clip=clip,
                 lora_lib=lora_lib,
-                theme_result=theme_result,
+                decision=decision,
                 on_error=on_error,
             )
         except SchemaError as exc:

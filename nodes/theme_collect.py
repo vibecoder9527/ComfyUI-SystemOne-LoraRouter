@@ -1,31 +1,31 @@
-"""Merge two theme results so a branch can feed LoRA Aggregate."""
+"""Merge two decision payloads so sibling option branches can share one Aggregate."""
 
 from __future__ import annotations
 
-from ..aggregate import collect_theme_results
+from ..aggregate import collect_decisions
 
 CATEGORY = "SystemOne/LoraRouter"
 
 
 class S1ThemeCollect:
-    """Append result b after result a. Identical theme ids collapse once."""
+    """Keep the first copy of each theme id. Conflicting decisions raise."""
 
     CATEGORY = CATEGORY
     FUNCTION = "merge"
-    RETURN_TYPES = ("S1_THEME_RESULT",)
-    RETURN_NAMES = ("theme_result",)
+    RETURN_TYPES = ("S1_DECISION",)
+    RETURN_NAMES = ("decision",)
     OUTPUT_TOOLTIPS = (
-        "First copy of each theme id from a, then ids that appear only in b. "
-        "Tags are recomputed from the kept decisions.",
+        "Merged S1_DECISION. Wire it into another Theme, another Theme Collect, "
+        "or LoRA Aggregate. Tags are recomputed from the kept decisions.",
     )
     DESCRIPTION = (
-        "Join two S1_THEME_RESULT values. Wire the output into another Theme's "
-        "upstream input, another Theme Collect, or LoRA Aggregate. "
-        "Order is the first copy of each theme_id: all of a, then new ids from b. "
-        "The same decision for a theme_id already kept is dropped, so two branches "
-        "that share an ancestor merge that ancestor once. A different decision for "
-        "that id raises SchemaError and is not overwritten. "
-        "Chain this node to merge more than two results."
+        "Join two S1_DECISION payloads. Use this when two option branches should "
+        "apply together. Order is the first copy of each theme_id: all of a, then "
+        "new ids from b. The same decision for a theme_id already kept is dropped, "
+        "so a shared ancestor is stored once. A different decision for that id "
+        "raises SchemaError. "
+        "ComfyUI does not run this node when either input is an ExecutionBlocker. "
+        "Both branches have to emit a payload. Chain this node to merge more than two."
     )
 
     @classmethod
@@ -33,15 +33,21 @@ class S1ThemeCollect:
         return {
             "required": {
                 "a": (
-                    "S1_THEME_RESULT",
-                    {"forceInput": True, "tooltip": "First result. Its decisions stay first."},
+                    "S1_DECISION",
+                    {
+                        "forceInput": True,
+                        "tooltip": "First decision. Its decisions stay first.",
+                    },
                 ),
                 "b": (
-                    "S1_THEME_RESULT",
-                    {"forceInput": True, "tooltip": "Second result. Appended after a."},
+                    "S1_DECISION",
+                    {
+                        "forceInput": True,
+                        "tooltip": "Second decision. New theme ids are appended after a.",
+                    },
                 ),
             }
         }
 
     def merge(self, a, b):
-        return (collect_theme_results(a, b),)
+        return (collect_decisions(a, b),)
