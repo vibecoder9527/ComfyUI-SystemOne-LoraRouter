@@ -52,6 +52,16 @@ class S1ThemeSequence:
                         "tooltip": "Positive prompt. Sent as state.positive.",
                     },
                 ),
+                # Required, immediately after positive, so the node widget sits
+                # under the positive prompt. A blank value is still sent as "".
+                "negative": (
+                    "STRING",
+                    {
+                        "multiline": True,
+                        "default": "",
+                        "tooltip": "Negative prompt. Sent as state.negative (empty string if blank).",
+                    },
+                ),
                 "sequence_json": (
                     "STRING",
                     {
@@ -91,14 +101,6 @@ class S1ThemeSequence:
             },
             "optional": {
                 "clip": ("CLIP",),
-                "negative": (
-                    "STRING",
-                    {
-                        "multiline": True,
-                        "default": "",
-                        "tooltip": "Negative prompt. Sent as state.negative (empty string if blank).",
-                    },
-                ),
                 "endpoint": (
                     "STRING",
                     {
@@ -139,11 +141,11 @@ class S1ThemeSequence:
         theme_lib,
         lora_lib,
         positive,
-        sequence_json,
-        api_key,
-        api_model,
-        clip=None,
         negative="",
+        sequence_json=EMPTY_SEQUENCE_JSON,
+        api_key="",
+        api_model="",
+        clip=None,
         endpoint=DEFAULT_ENDPOINT,
         noul_threshold=0.5,
         on_error="passthrough",

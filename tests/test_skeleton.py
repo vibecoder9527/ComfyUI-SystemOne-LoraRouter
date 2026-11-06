@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import importlib
 import importlib.util
+import inspect
 import io
 import json
 import os
@@ -950,29 +951,42 @@ class NodeTests(unittest.TestCase):
             ("model", "clip", "report_json"),
         )
         sequence_inputs = mappings["S1ThemeSequence"].INPUT_TYPES()
+        required_names = list(sequence_inputs["required"])
         self.assertEqual(
-            set(sequence_inputs["required"]),
-            {
+            required_names,
+            [
                 "model",
                 "theme_lib",
                 "lora_lib",
                 "positive",
+                "negative",
                 "sequence_json",
                 "api_key",
                 "api_model",
-            },
+            ],
         )
+        self.assertEqual(required_names[required_names.index("positive") + 1], "negative")
+        negative_spec = sequence_inputs["required"]["negative"]
+        self.assertEqual(negative_spec[0], "STRING")
+        self.assertTrue(negative_spec[1]["multiline"])
+        self.assertEqual(negative_spec[1]["default"], "")
         self.assertEqual(
             set(sequence_inputs["optional"]),
             {
                 "clip",
-                "negative",
                 "endpoint",
                 "noul_threshold",
                 "on_error",
                 "strength_conflict",
                 "min_confidence",
             },
+        )
+        self.assertNotIn("negative", sequence_inputs["optional"])
+        apply_params = list(inspect.signature(mappings["S1ThemeSequence"].apply).parameters)
+        self.assertEqual(apply_params[apply_params.index("positive") + 1], "negative")
+        self.assertEqual(
+            inspect.signature(mappings["S1ThemeSequence"].apply).parameters["negative"].default,
+            "",
         )
         self.assertTrue(sequence_inputs["required"]["theme_lib"][1]["forceInput"])
         self.assertTrue(sequence_inputs["required"]["lora_lib"][1]["forceInput"])
@@ -1062,6 +1076,39 @@ class NodeTests(unittest.TestCase):
                 api_model="",
                 on_error="raise",
             )
+
+    def test_negative_under_positive_reaches_state(self):
+        lora_node = PKG.NODE_CLASS_MAPPINGS["S1LoraLibrary"]()
+        theme_node = PKG.NODE_CLASS_MAPPINGS["S1ThemeLibrary"]()
+        sequence_node = PKG.NODE_CLASS_MAPPINGS["S1ThemeSequence"]()
+        (lora_lib,) = lora_node.build(_read("lora_library.minimal.json"))
+        (theme_lib,) = theme_node.build(_read("theme_library.minimal.json"))
+        seen = []
+
+        def urlopen(req, timeout=None):
+            seen.append(_payload_from_request(req)["state"])
+            return _canned_urlopen(req, timeout)
+
+        def run(**extra):
+            seen.clear()
+            with mock.patch("urllib.request.urlopen", side_effect=urlopen):
+                sequence_node.apply(
+                    model=object(),
+                    theme_lib=theme_lib,
+                    lora_lib=lora_lib,
+                    positive="anime",
+                    sequence_json=_read("sequence.minimal.json"),
+                    api_key="sekret-token-xyz",
+                    api_model="my-model",
+                    **extra,
+                )
+            self.assertTrue(seen)
+            return seen
+
+        self.assertTrue(all(item == {"positive": "anime", "negative": "blurry"} for item in run(negative="blurry")))
+        self.assertTrue(all(item == {"positive": "anime", "negative": ""} for item in run()))
+        self.assertTrue(all(item == {"positive": "anime", "negative": ""} for item in run(negative="")))
+        self.assertTrue(all(item == {"positive": "anime", "negative": ""} for item in run(negative=None)))
 
     def test_comfyui_loader_style_import(self):
         script = (
