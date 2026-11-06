@@ -427,14 +427,57 @@ function actionFromEditor(action, path) {
   return { type: type ?? "" };
 }
 
+// Mirrors schema/lora_ids.py. Smallest unused positive integer, formatted lora_N.
+// A non-empty lora_id is kept, including manual ids. Blank means missing, "", or whitespace.
+export function nextLoraId(existingIds) {
+  const used = new Set();
+  if (Array.isArray(existingIds)) {
+    for (const item of existingIds) {
+      if (typeof item === "string" && item !== "") used.add(item);
+    }
+  }
+  let number = 1;
+  while (used.has(`lora_${number}`)) number += 1;
+  return `lora_${number}`;
+}
+
+function loraIdKept(value) {
+  return typeof value === "string" && value.trim() !== "";
+}
+
+export function assignLoraIds(model) {
+  const loras = model?.loras;
+  if (!Array.isArray(loras)) return model;
+  const seen = [];
+  for (const entry of loras) {
+    if (entry && loraIdKept(entry.lora_id)) seen.push(entry.lora_id);
+  }
+  for (const entry of loras) {
+    if (!entry || typeof entry !== "object") continue;
+    if (loraIdKept(entry.lora_id)) continue;
+    const id = nextLoraId(seen);
+    entry.lora_id = id;
+    seen.push(id);
+  }
+  return model;
+}
+
+function sharedStrength(entry, path) {
+  const hasEditorField = entry && Object.prototype.hasOwnProperty.call(entry, "strength");
+  const source = hasEditorField ? entry.strength : entry?.strength_model;
+  return numberFromEditor(source, `${path}.strength`, true);
+}
+
 function documentFromLora(model) {
+  if (model && Array.isArray(model.loras)) assignLoraIds(model);
   const loras = (model?.loras || []).map((entry, index) => {
     const path = `loras[${index}]`;
+    const strength = sharedStrength(entry, path);
     const out = {
       lora_id: entry.lora_id ?? "",
       name: entry.name ?? "",
-      strength_model: numberFromEditor(entry.strength_model, `${path}.strength_model`, true),
-      strength_clip: numberFromEditor(entry.strength_clip, `${path}.strength_clip`, true),
+      strength_model: strength,
+      strength_clip: strength,
     };
     if (Array.isArray(entry.tags) && entry.tags.length) out.tags = entry.tags;
     if (entry.enabled_default === false) out.enabled_default = false;
@@ -491,6 +534,7 @@ function emitLora(checked) {
   return {
     version: 1,
     loras: checked.loras.map((entry) => {
+      // documentFromLora already copied the one editor strength onto both keys.
       const out = {
         lora_id: entry.lora_id,
         name: entry.name,
@@ -589,6 +633,7 @@ export function commitModel(kind, model) {
 }
 
 export function blankLora() {
+  // lora_id stays blank until assignLoraIds (Add LoRA and Apply). Both strengths match.
   return { lora_id: "", name: "", strength_model: 0.8, strength_clip: 0.8, tags: [], enabled_default: true, meta: null };
 }
 

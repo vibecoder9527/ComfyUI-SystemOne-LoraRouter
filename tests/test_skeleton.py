@@ -1217,6 +1217,108 @@ console.log("ok");
         self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
         self.assertIn("ok", completed.stdout)
 
+    def test_editor_model_assigns_lora_ids_and_shares_strength(self):
+        model_js = (ROOT / "js" / "s1_model.js").read_text(encoding="utf-8")
+        self.assertIn("export function nextLoraId", model_js)
+        self.assertIn("export function assignLoraIds", model_js)
+        self.assertIn("strength_model: strength", model_js)
+        self.assertIn("strength_clip: strength", model_js)
+        node = shutil.which("node")
+        if node is None:
+            self.skipTest("node is not installed")
+        script = r"""
+import { assignLoraIds, blankLora, commitModel, nextLoraId } from "./js/s1_model.js";
+
+function assert(cond, message) {
+  if (!cond) {
+    console.error(message);
+    process.exit(1);
+  }
+}
+
+assert(nextLoraId([]) === "lora_1", "empty -> lora_1");
+assert(nextLoraId(["lora_1", "lora_3"]) === "lora_2", "fill the gap");
+assert(nextLoraId(["style_anime_v3", "lora_1"]) === "lora_2", "manual id stays out of the sequence");
+assert(nextLoraId(["lora_0", "lora_01", "Lora_1"]) === "lora_1", "only exact lora_N is taken");
+
+const created = blankLora();
+assert(created.lora_id === "", "blank id is filled later");
+assert(created.strength_model === 0.8 && created.strength_clip === 0.8, "blank strengths match");
+
+const model = {
+  loras: [
+    { lora_id: "", name: "new.safetensors", strength_model: 0.2, strength_clip: 0.9 },
+    { lora_id: "style_anime_v3", name: "a.safetensors", strength_model: 0.8, strength_clip: 0.4 },
+    { lora_id: "lora_1", name: "b.safetensors", strength_model: 0.5, strength_clip: 0.5 },
+    blankLora(),
+    { lora_id: "   ", name: "blank.safetensors", strength_model: 1, strength_clip: 1 },
+  ],
+};
+assignLoraIds(model);
+assert(model.loras[0].lora_id === "lora_2", "blank does not collide with later lora_1");
+assert(model.loras[1].lora_id === "style_anime_v3", "manual id kept");
+assert(model.loras[2].lora_id === "lora_1", "lora_1 kept");
+assert(model.loras[3].lora_id === "lora_3", "blankLora filled");
+assert(model.loras[4].lora_id === "lora_4", "whitespace id replaced");
+assert(model.loras[1].strength_clip === 0.4, "assignLoraIds does not rewrite strengths");
+
+const applied = commitModel("lora", {
+  loras: [
+    { lora_id: "style_anime_v3", name: "a.safetensors", strength_model: 0.85, strength_clip: 0.2, tags: ["style"], enabled_default: false, meta: { note: "x" } },
+    { lora_id: "", name: "new.safetensors", strength: "0.6", strength_model: 0.1, strength_clip: 0.1 },
+    { name: "also.safetensors", strength_model: 0.3, strength_clip: 0.9 },
+  ],
+});
+assert(applied.ok, applied.error || "commit failed");
+assert(applied.doc.loras[0].lora_id === "style_anime_v3", "commit keeps manual id");
+assert(applied.doc.loras[0].strength_model === 0.85 && applied.doc.loras[0].strength_clip === 0.85, "prefer strength_model");
+assert(applied.doc.loras[0].tags[0] === "style", "tags kept");
+assert(applied.doc.loras[0].enabled_default === false, "enabled_default kept");
+assert(applied.doc.loras[0].meta.note === "x", "meta kept");
+assert(applied.doc.loras[1].lora_id === "lora_1", "blank filled on commit");
+assert(applied.doc.loras[1].strength_model === 0.6 && applied.doc.loras[1].strength_clip === 0.6, "editor strength field");
+assert(applied.doc.loras[2].lora_id === "lora_2", "missing id filled on commit");
+assert(applied.doc.loras[2].strength_model === 0.3 && applied.doc.loras[2].strength_clip === 0.3, "strength_model copied to clip");
+for (const entry of applied.doc.loras) {
+  assert(!Object.prototype.hasOwnProperty.call(entry, "strength"), "stored JSON has no strength key");
+}
+assert(applied.model.loras[1].lora_id === "lora_1", "returned editor model has the new id");
+assert(applied.model.loras[1].strength === undefined, "returned model drops the editor strength field");
+assert(!applied.json.includes('\n    "strength":'), "pretty JSON has no strength key");
+
+const themed = commitModel("theme", {
+  themes: [{
+    theme_id: "t",
+    title: "t",
+    instructions: "i",
+    select_mode: "single",
+    options: [{
+      option_id: "o",
+      label: "o",
+      description: "",
+      lora_bindings: [{ lora_id: "style_anime_v3", strength_model: 0.2, strength_clip: 0.4 }],
+    }],
+  }],
+});
+assert(themed.ok, themed.error || "theme commit failed");
+const binding = themed.doc.themes[0].options[0].lora_bindings[0];
+assert(binding.lora_id === "style_anime_v3", "binding id kept");
+assert(binding.strength_model === 0.2 && binding.strength_clip === 0.4, "binding strengths stay independent");
+
+const missing = commitModel("lora", { loras: [{ lora_id: "a", name: "a.safetensors" }] });
+assert(!missing.ok, "missing strength is rejected");
+console.log("ok");
+"""
+        completed = subprocess.run(
+            [node, "--input-type=module", "--eval", script],
+            check=False,
+            capture_output=True,
+            text=True,
+            cwd=str(ROOT),
+        )
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        self.assertIn("ok", completed.stdout)
+
     def test_sequence_editor_puts_negative_prompt_under_positive(self):
         editors = (ROOT / "js" / "s1_editors.js").read_text(encoding="utf-8")
         positive_at = editors.index('promptField("positive"')
