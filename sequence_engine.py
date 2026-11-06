@@ -13,6 +13,10 @@ Control flow:
   SystemOne. Later steps can match ``when.op: skipped``.
 - One option left on a single-select step skips the API and takes that option
   (SPEC §4.2.1). This runner does not invent an extra ``__none__`` option.
+- An invalid ``choice`` fails. A choice whose ``confidence`` is below
+  ``min_confidence`` is kept and marked ``low_confidence_kept``. There is no
+  ``fallback_option_id``. ``none_option_id`` stays on the theme as an optional
+  reference; a choice of ``none`` is just that option id when the theme has one.
 - API and decision failures raise ``SequenceError`` with a partial report.
   ``S1ThemeSequence`` turns that into an unchanged MODEL/CLIP when
   ``on_error`` is ``passthrough``. Missing LoRA files are handled in
@@ -243,23 +247,10 @@ def _run_single(client, state, step_id, theme: ThemeDefinition, min_confidence, 
     reason = None
     confidence = raw_answer.get("confidence")
     if choice not in valid:
-        choice, reason = _fallback_or_fail(
-            theme,
-            valid,
-            fail,
-            f"step {step_id!r} got choice {choice!r}, which is not an option",
-        )
+        fail(f"step {step_id!r} got choice {choice!r}, which is not an option")
     elif confidence is not None and _as_confidence(confidence, step_id, fail) < min_confidence:
-        # SPEC §2.3: choice below min_confidence uses fallback_option_id when set.
-        if theme.fallback_option_id:
-            choice, reason = _fallback_or_fail(
-                theme,
-                valid,
-                fail,
-                f"step {step_id!r} confidence {confidence} is below {min_confidence}",
-            )
-        else:
-            reason = "low_confidence_kept"
+        # Low confidence keeps the choice. There is no fallback option.
+        reason = "low_confidence_kept"
     raw = {"stub": response.get("stub", False), "answers": {step_id: raw_answer}}
     if reason:
         raw["decision"] = reason
@@ -317,17 +308,6 @@ def _call(client, state, questions, fail) -> dict[str, Any]:
     if missing:
         fail(f"SystemOne response is missing answers for {missing!r}")
     return response
-
-
-def _fallback_or_fail(theme: ThemeDefinition, valid: set[str], fail, message: str):
-    fallback = theme.fallback_option_id
-    if not fallback:
-        fail(message)
-    if fallback not in valid:
-        fail(
-            f"{message}; fallback_option_id {fallback!r} is not in the runtime options"
-        )
-    return fallback, "used_fallback"
 
 
 def _as_confidence(value, step_id: str, fail) -> float:

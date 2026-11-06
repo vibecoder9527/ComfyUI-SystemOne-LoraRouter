@@ -48,7 +48,6 @@ _THEME_KEYS = {
     "instructions",
     "select_mode",
     "options",
-    "fallback_option_id",
     "none_option_id",
 }
 _OPTION_KEYS = {"option_id", "label", "description", "lora_bindings"}
@@ -128,7 +127,6 @@ class ThemeDefinition:
     instructions: str
     select_mode: str
     options: list[ThemeOption]
-    fallback_option_id: str | None = None
     none_option_id: str | None = None
 
 
@@ -334,14 +332,8 @@ def _parse_theme(data: Any, path: str) -> ThemeDefinition:
     for index, item in enumerate(raw_options):
         option = _parse_option(item, f"{path}.options[{index}]", seen)
         options.append(option)
-    fallback = _optional_id_or_null(data, "fallback_option_id", path)
     none_id = _optional_id_or_null(data, "none_option_id", path)
     known = {option.option_id for option in options}
-    if fallback is not None and fallback not in known:
-        raise SchemaError(
-            f"fallback_option_id {fallback!r} is not an option of this theme",
-            path,
-        )
     if none_id is not None and none_id not in known:
         raise SchemaError(
             f"none_option_id {none_id!r} is not an option of this theme",
@@ -353,7 +345,6 @@ def _parse_theme(data: Any, path: str) -> ThemeDefinition:
         instructions=instructions,
         select_mode=select_mode,
         options=options,
-        fallback_option_id=fallback,
         none_option_id=none_id,
     )
 

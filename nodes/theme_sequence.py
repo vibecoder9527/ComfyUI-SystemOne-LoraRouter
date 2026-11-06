@@ -128,8 +128,9 @@ class S1ThemeSequence:
                         "max": 1.0,
                         "step": 0.01,
                         "tooltip": (
-                            "When a choice confidence is below this and the theme has "
-                            "fallback_option_id, that fallback is used."
+                            "When a choice confidence is below this, the choice is kept "
+                            "and the report notes low_confidence_kept. An invalid choice "
+                            "fails. There is no fallback option."
                         ),
                     },
                 ),

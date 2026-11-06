@@ -40,6 +40,7 @@ def load_package():
 PKG = load_package()
 TYPES = importlib.import_module(PACKAGE_NAME + ".schema.types")
 IDS = importlib.import_module(PACKAGE_NAME + ".schema.lora_ids")
+THEME_IDS = importlib.import_module(PACKAGE_NAME + ".schema.theme_ids")
 CLIENT = importlib.import_module(PACKAGE_NAME + ".systemone.client")
 ENGINE = importlib.import_module(PACKAGE_NAME + ".sequence_engine")
 APPLY = importlib.import_module(PACKAGE_NAME + ".apply_loras")
@@ -175,6 +176,15 @@ class SchemaTests(unittest.TestCase):
         self.assertEqual(set(minimal_loras.loras), {"style_anime_v3", "style_realistic", "char_a"})
         self.assertEqual(minimal_themes.get("art_style").select_mode, "single")
         self.assertEqual(minimal_themes.get("character_pack").select_mode, "multi")
+        self.assertIsNone(minimal_themes.get("art_style").none_option_id)
+        self.assertFalse(hasattr(minimal_themes.get("art_style"), "fallback_option_id"))
+        minimal_theme_doc = json.loads(_read("theme_library.minimal.json"))
+        for theme in minimal_theme_doc["themes"]:
+            self.assertNotIn("fallback_option_id", theme)
+        self.assertEqual(
+            [option.option_id for option in minimal_themes.get("art_style").options],
+            ["anime", "realistic"],
+        )
 
     def test_rejects_bad_documents(self):
         with self.assertRaises(TYPES.SchemaError) as ctx:
@@ -380,6 +390,171 @@ class LoraIdHelperTests(unittest.TestCase):
         entry = library.get("style_anime_v3")
         self.assertEqual(entry.strength_model, 0.85)
         self.assertEqual(entry.strength_clip, 0.8)
+
+
+class ThemeIdHelperTests(unittest.TestCase):
+    def test_next_theme_id_and_next_option_id_fill_gaps(self):
+        self.assertEqual(THEME_IDS.next_theme_id([]), "theme_1")
+        self.assertEqual(THEME_IDS.next_theme_id(["theme_1", "theme_2"]), "theme_3")
+        self.assertEqual(THEME_IDS.next_theme_id(["theme_1", "theme_3"]), "theme_2")
+        self.assertEqual(THEME_IDS.next_theme_id(["art_style", "character_pack"]), "theme_1")
+        self.assertEqual(THEME_IDS.next_theme_id(["theme_2", "art_style"]), "theme_1")
+        self.assertEqual(THEME_IDS.next_theme_id(["theme_0", "theme_01", "Theme_1"]), "theme_1")
+        self.assertEqual(THEME_IDS.next_theme_id(["", "theme_1", None, "theme_4"]), "theme_2")
+        self.assertEqual(THEME_IDS.next_option_id([]), "option_1")
+        self.assertEqual(THEME_IDS.next_option_id(["option_1", "option_3"]), "option_2")
+        self.assertEqual(THEME_IDS.next_option_id(["anime", "option_2"]), "option_1")
+        self.assertEqual(THEME_IDS.next_option_id(["option_0", "Option_1"]), "option_1")
+
+    def test_ensure_theme_ids_keeps_manual_ids_and_scopes_options(self):
+        original = [
+            {
+                "theme_id": "",
+                "title": "New",
+                "options": [
+                    {"option_id": "anime", "label": "a"},
+                    {"option_id": ""},
+                    {"option_id": "option_1", "label": "kept"},
+                ],
+            },
+            {
+                "theme_id": "theme_1",
+                "options": [{"option_id": "   "}, {"option_id": "waifu_a"}],
+            },
+            {"theme_id": "art_style", "title": "Style"},
+            {"title": "Missing"},
+            {"theme_id": "   ", "options": []},
+        ]
+        filled = THEME_IDS.ensure_theme_ids(original)
+        self.assertEqual(
+            [theme["theme_id"] for theme in filled],
+            ["theme_2", "theme_1", "art_style", "theme_3", "theme_4"],
+        )
+        self.assertEqual(
+            [option["option_id"] for option in filled[0]["options"]],
+            ["anime", "option_2", "option_1"],
+        )
+        self.assertEqual(
+            [option["option_id"] for option in filled[1]["options"]],
+            ["option_1", "waifu_a"],
+        )
+        self.assertNotIn("options", filled[2])
+        self.assertEqual(filled[0]["title"], "New")
+        self.assertEqual(original[0]["theme_id"], "")
+        self.assertEqual(original[0]["options"][1]["option_id"], "")
+        self.assertIsNot(filled[0], original[0])
+        self.assertIsNot(filled[0]["options"][0], original[0]["options"][0])
+        self.assertNotIn("theme_id", original[3])
+
+        minimal = json.loads(_read("theme_library.minimal.json"))
+        ensured = THEME_IDS.ensure_theme_ids(minimal["themes"])
+        self.assertEqual(
+            [theme["theme_id"] for theme in ensured],
+            ["art_style", "character_pack"],
+        )
+        self.assertEqual(
+            [option["option_id"] for option in ensured[0]["options"]],
+            ["anime", "realistic"],
+        )
+
+    def test_ensure_option_ids_does_not_see_other_lists(self):
+        first = THEME_IDS.ensure_option_ids([{"option_id": ""}, {"option_id": "anime"}])
+        second = THEME_IDS.ensure_option_ids([{"option_id": ""}, {"option_id": "anime"}])
+        self.assertEqual([item["option_id"] for item in first], ["option_1", "anime"])
+        self.assertEqual([item["option_id"] for item in second], ["option_1", "anime"])
+        with self.assertRaises(TypeError):
+            THEME_IDS.ensure_theme_ids({"theme_id": "t"})
+        with self.assertRaises(TypeError):
+            THEME_IDS.ensure_option_ids({"option_id": "o"})
+
+    def test_fallback_option_id_is_rejected_and_none_remains(self):
+        with self.assertRaises(TYPES.SchemaError) as ctx:
+            TYPES.parse_theme_library(
+                {
+                    "themes": [
+                        {
+                            "theme_id": "t",
+                            "title": "T",
+                            "instructions": "I",
+                            "select_mode": "single",
+                            "fallback_option_id": "a",
+                            "options": [_option("a")],
+                        }
+                    ]
+                }
+            )
+        self.assertIn("unknown field", str(ctx.exception))
+        self.assertIn("fallback_option_id", str(ctx.exception))
+        kept = _theme(
+            [
+                {
+                    "theme_id": "art_style",
+                    "title": "Style",
+                    "instructions": "Pick one.",
+                    "select_mode": "single",
+                    "none_option_id": "none",
+                    "options": [_option("none"), _option("anime")],
+                }
+            ]
+        )
+        self.assertEqual(kept.get("art_style").none_option_id, "none")
+        self.assertEqual(
+            [option.option_id for option in kept.get("art_style").options],
+            ["none", "anime"],
+        )
+        with self.assertRaises(TYPES.SchemaError) as ctx:
+            _theme(
+                [
+                    {
+                        "theme_id": "t",
+                        "title": "T",
+                        "instructions": "I",
+                        "select_mode": "single",
+                        "none_option_id": "missing",
+                        "options": [_option("a")],
+                    }
+                ]
+            )
+        self.assertIn("none_option_id", str(ctx.exception))
+        result = ENGINE.run_sequence(
+            model=object(),
+            clip=None,
+            lora_lib=_lora([]),
+            theme_lib=kept,
+            sequence_json={"steps": [{"step_id": "s1", "theme_id": "art_style"}]},
+            positive="",
+            client=FixedChoiceClient("none"),
+        )
+        self.assertEqual(result.report["answers"]["s1"]["selected"], ["none"])
+
+    def test_parse_still_requires_theme_and_option_ids(self):
+        with self.assertRaises(TYPES.SchemaError):
+            TYPES.parse_theme_library(
+                {
+                    "themes": [
+                        {
+                            "title": "T",
+                            "instructions": "I",
+                            "select_mode": "single",
+                            "options": [],
+                        }
+                    ]
+                }
+            )
+        with self.assertRaises(TYPES.SchemaError):
+            TYPES.parse_theme_library(
+                {
+                    "themes": [
+                        {
+                            "theme_id": "t",
+                            "title": "T",
+                            "instructions": "I",
+                            "select_mode": "single",
+                            "options": [{"label": "L", "description": "D"}],
+                        }
+                    ]
+                }
+            )
 
 
 class ClientTests(unittest.TestCase):
@@ -719,7 +894,7 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(len(client.calls[1][1]), 1)
         self.assertEqual(len(result.report["answers"]["s"]["selected"]), 33)
 
-    def test_confidence_fallback_and_dependencies(self):
+    def test_low_confidence_keeps_choice_and_invalid_choice_fails(self):
         loras = _lora(
             [{"lora_id": "R", "name": "R.safetensors", "strength_model": 0.2, "strength_clip": 0.2}]
         )
@@ -730,7 +905,6 @@ class EngineTests(unittest.TestCase):
                     "title": "S",
                     "instructions": "I",
                     "select_mode": "single",
-                    "fallback_option_id": "realistic",
                     "options": [
                         _option("anime"),
                         _option("realistic", [_binding("R")]),
@@ -749,7 +923,9 @@ class EngineTests(unittest.TestCase):
             min_confidence=0.5,
             client=FixedChoiceClient("anime", confidence=0.1),
         )
-        self.assertEqual(low.report["answers"]["s1"]["selected"], ["realistic"])
+        self.assertEqual(low.report["answers"]["s1"]["selected"], ["anime"])
+        self.assertEqual(low.report["answers"]["s1"]["raw"]["decision"], "low_confidence_kept")
+        self.assertEqual(low.report["applied"], [])
         boundary = ENGINE.run_sequence(
             model=object(),
             clip=None,
@@ -761,6 +937,7 @@ class EngineTests(unittest.TestCase):
             client=FixedChoiceClient("anime", confidence=0.5),
         )
         self.assertEqual(boundary.report["answers"]["s1"]["selected"], ["anime"])
+        self.assertNotIn("decision", boundary.report["answers"]["s1"]["raw"])
         missing_confidence = ENGINE.run_sequence(
             model=object(),
             clip=None,
@@ -772,34 +949,13 @@ class EngineTests(unittest.TestCase):
             client=FixedChoiceClient("anime", include_confidence=False),
         )
         self.assertEqual(missing_confidence.report["answers"]["s1"]["selected"], ["anime"])
-        invalid = ENGINE.run_sequence(
-            model=object(),
-            clip=None,
-            lora_lib=loras,
-            theme_lib=themes,
-            sequence_json=sequence,
-            positive="",
-            client=FixedChoiceClient("nope"),
-        )
-        self.assertEqual(invalid.report["answers"]["s1"]["selected"], ["realistic"])
-
-        no_fallback = _theme(
-            [
-                {
-                    "theme_id": "style",
-                    "title": "S",
-                    "instructions": "I",
-                    "select_mode": "single",
-                    "options": [_option("anime"), _option("realistic")],
-                }
-            ]
-        )
+        self.assertNotIn("decision", missing_confidence.report["answers"]["s1"]["raw"])
         with self.assertRaises(ENGINE.SequenceError) as ctx:
             ENGINE.run_sequence(
                 model=object(),
                 clip=None,
-                lora_lib=_lora([]),
-                theme_lib=no_fallback,
+                lora_lib=loras,
+                theme_lib=themes,
                 sequence_json=sequence,
                 positive="",
                 client=FixedChoiceClient("nope"),

@@ -6,7 +6,6 @@
       "title": "畫風",
       "instructions": "判斷提示詞的主要畫風。",
       "select_mode": "single",
-      "fallback_option_id": "realistic",
       "options": [
         {
           "option_id": "anime",
@@ -31,7 +30,6 @@
       "title": "角色包",
       "instructions": "是否套用角色 LoRA（可複選）。",
       "select_mode": "multi",
-      "fallback_option_id": null,
       "options": [
         {
           "option_id": "waifu_a",
