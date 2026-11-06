@@ -88,7 +88,7 @@ Valid edits reach `theme_json` or `library_json` after about 220ms. Invalid fiel
 
 `lora_id`, `theme_id`, and `option_id` are read-only in the form. Adding or duplicating a Theme or Theme Root writes the next free `theme_N` into `theme_json` before the prompt is queued, including when this modal stays closed. A saved non-empty id that is unique on the loaded graph stays, including a manual id such as `art_style`. If a loaded workflow has two theme nodes with the same non-empty `theme_id`, both documents are left as saved and the node title notes a theme_id conflict. A decision chain still rejects a repeated theme_id. One strength control writes `strength_model` and `strength_clip`. The LoRA name can be picked from the ComfyUI loras list or typed.
 
-After a valid theme write, and again when a graph is configured, the editor renames option sockets to `label (option_id)` and hides the unused ones. A live wire is not dropped because a sibling slot is hidden, and a socket that still has links is not marked hidden. The first sync stamps ids by index and does not move wires. A later sync moves wires by `option_id` and drops a wire whose option disappeared. `report_json` stays at index 32.
+After a valid theme write, and again when a graph is configured or queued, the editor renames option sockets to `label (option_id)`. Unused pads stay on the node, labeled `·`, and are not hidden. ComfyUI 0.44 / frontend 1.57.6 drops a wire when `output.hidden` is set, and it stores the wire in `graph.links` (`origin_id` / `originId`, `origin_slot` / `originSlot`) even when `output.links` is empty. The sync reads that record. It does not assign `output.links`, because that setter disconnects the link. The first sync stamps ids by index and does not move wires. A later sync moves wires by `option_id`. A wire with no stamped id, and a wire whose option disappeared, stay connected. `report_json` stays at index 32.
 
 Restart ComfyUI after installing so it loads `js/`.
 
@@ -108,7 +108,7 @@ Unittest discovers `tests/test_*.py`. It does not call SystemOne and does not ne
 ## Limitations
 
 - A live graph skips unselected slots only when this package returns ComfyUI's `ExecutionBlocker`. Without ComfyUI, the node returns a local stand-in with the same `message`. Tests assert that stand-in. `message is None` is the silent skip.
-- The node always exposes 32 option sockets plus `report_json`. Hiding the unused ones depends on the frontend honoring `output.hidden`. A hidden slot still returns a blocker, so a wire on it does not run downstream work when ComfyUI's blocker is in use.
+- The node always exposes 32 option sockets plus `report_json`. Unused sockets stay visible with the label `·` so frontend 1.57.6 does not strip their wires. A socket past the option list still returns a blocker, so a wire on it does not run downstream work when ComfyUI's blocker is in use.
 - The first editor sync does not move existing wires. A saved link that used to be `theme_result` on output 0 is treated as option 0 until you retarget it. `migrate_router_graph` warns instead of guessing.
 - `on_error=passthrough` emits on every real option slot, so children of those slots run. That is wider than the old enable-rule skip.
 - A multi theme with zero selections, and a theme with zero options, do not emit upstream tags on a slot.

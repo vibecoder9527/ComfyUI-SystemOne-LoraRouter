@@ -408,9 +408,9 @@ const dropped = {
   },
 };
 const drop = relinkOptionSlots(dropped, planned.slots);
-assert(drop.dropped === 1, "missing option drops the wire");
-assert(dropped.graph.links[9] === undefined, "link removed");
-assert(dropped.graph._nodes[0].inputs[3].link === null, "target input cleared");
+assert(drop.dropped === 0 && drop.kept === 1, "a connected missing option is kept");
+assert(dropped.graph.links[9].origin_slot === 0, "gone option wire stays on its slot");
+assert(dropped.graph._nodes[0].inputs[3].link === 9, "target input stays connected");
 
 const sibling = {
   id: 11,
@@ -425,10 +425,10 @@ const sibling = {
   },
 };
 const siblingSync = relinkOptionSlots(sibling, planned.slots);
-assert(siblingSync.dropped === 0, "hiding pad siblings does not drop a live option wire");
+assert(siblingSync.dropped === 0, "an unused sibling pad does not drop a live option wire");
 assert(sibling.graph.links[21].origin_slot === 0, "selected slot stays linked");
 assert(sibling.outputs[0].hidden === false && sibling.outputs[0].links.includes(21), "live option stays visible");
-assert(sibling.outputs[2].hidden === true, "unused pad is hidden");
+assert(sibling.outputs[2].hidden === false && sibling.outputs[2].name === "·", "unused pad stays visible");
 
 const livePad = {
   id: 13,
@@ -448,6 +448,75 @@ relinkOptionSlots(livePad, planned.slots);
 assert(livePad.outputs[5].hidden === false, "a pad with a live wire is not hidden");
 assert(livePad.graph.links[22].origin_slot === 5, "live pad wire is kept");
 assert(livePad.outputs[5].links.includes(22), "live pad link id stays on the output");
+assert(livePad.outputs[5].name === "option_6", "a linked pad name is not blanked");
+
+// Frontend 1.57: graph.links is a Map, ids may be strings, and the slot's
+// output.links mirror can be null. CamelCase originId/originSlot counts.
+const linksOnly = {
+  id: "15",
+  outputs: [
+    { name: "option_1", type: "S1_DECISION", links: null },
+  ],
+  graph: {
+    links: new Map([
+      [30, { id: 30, originId: 15, originSlot: 0, targetId: 16, targetSlot: 0, type: "S1_DECISION" }],
+    ]),
+  },
+};
+const linksOnlySync = relinkOptionSlots(linksOnly, planned.slots);
+assert(linksOnlySync.first === true && linksOnlySync.dropped === 0 && linksOnlySync.moved === 0, "map-only first sync stamps");
+assert(linksOnly.outputs[0].hidden === false && linksOnly.outputs[0].s1OptionId === "anime", "map wire keeps the socket");
+assert(linksOnly.outputs[0].links === null, "first sync does not rewrite a null links mirror");
+assert(linksOnly.graph.links.get(30).originSlot === 0, "map link stays on the option");
+assert(linksOnly.outputs[2].hidden === false && linksOnly.outputs[2].name === "·", "unlinked pad is visible");
+
+class StoreOutput {
+  constructor(name, optionId, ids) {
+    this.name = name;
+    this.type = "S1_DECISION";
+    this.s1OptionId = optionId;
+    this._ids = ids;
+  }
+  get links() { return this._ids; }
+  set links(_value) { throw new Error("output.links assignment drops the wire on frontend 1.57"); }
+}
+const storeNode = {
+  id: 40,
+  outputs: [
+    new StoreOutput("Anime (anime)", "anime", [71]),
+    new StoreOutput("none", "none", [72]),
+  ],
+  graph: {
+    links: new Map([
+      [71, { id: 71, origin_id: 40, origin_slot: 0, target_id: 41, target_slot: 0, type: "S1_DECISION" }],
+      [72, { id: 72, originId: "40", originSlot: 1, targetId: 42, targetSlot: 0, type: "S1_DECISION" }],
+    ]),
+  },
+};
+const storeMoved = relinkOptionSlots(storeNode, reordered.slots);
+assert(storeMoved.dropped === 0 && storeMoved.moved === 2, "reorder retargets store-backed links");
+assert(storeNode.graph.links.get(71).origin_slot === 1, "anime follows its id without assigning links");
+assert(storeNode.graph.links.get(72).originSlot === 0, "camelCase none follows its id");
+assert(storeNode.outputs[0].hidden === false && storeNode.outputs[1].hidden === false, "retargeted sockets stay visible");
+
+// A later sync must not drop a wire whose slot was never stamped, and must
+// not drop that wire just because the planned slot is an unused pad.
+const unstampedPad = {
+  id: 21,
+  outputs: [
+    { name: "Anime (anime)", type: "S1_DECISION", links: [], s1OptionId: "anime" },
+  ],
+  graph: {
+    links: {
+      40: { id: 40, origin_id: "21", origin_slot: 4, target_id: 22, target_slot: 1, type: "S1_DECISION" },
+    },
+  },
+};
+const unstamped = relinkOptionSlots(unstampedPad, planned.slots);
+assert(unstamped.dropped === 0 && unstamped.kept === 0, "empty s1OptionId is not a drop");
+assert(unstampedPad.graph.links[40].origin_slot === 4, "unstamped pad wire stays");
+assert(unstampedPad.outputs[4].hidden === false, "linked unused-planned slot is not hidden");
+assert(unstampedPad.outputs[4].s1OptionId === "", "pad stamp does not invent an option id");
 
 const prompts = {
   inputs: [

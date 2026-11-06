@@ -23,7 +23,7 @@ EMPTY_ENABLE_JSON = '{ "match": "any", "clauses": [] }'
 
 # Option sockets on Theme Root and Theme. Report JSON is the next output.
 # ComfyUI validates link indexes against RETURN_TYPES, so the count is fixed
-# and unused slots stay blocked. The frontend hides the unused ones.
+# and unused slots stay blocked. The frontend leaves those sockets visible.
 MAX_OPTION_OUTPUTS = 32
 REPORT_OUTPUT_INDEX = MAX_OPTION_OUTPUTS
 

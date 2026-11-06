@@ -282,6 +282,22 @@ class AggregateTests(unittest.TestCase):
         with self.assertRaises(TYPES.SchemaError):
             AGG.collect_decisions(payload_a, object())
 
+    def test_collect_runs_when_one_option_is_wired(self):
+        """One selected option is enough. The other socket can be omitted.
+
+        An ExecutionBlocker on the sibling does not have to be connected.
+        That is Theme option slot → Theme Collect a/b with a single wire.
+        """
+
+        wired = run_theme(
+            theme_json=theme_doc(theme_id="wired", options=[option("a", ["ta"])]),
+            client=CountingClient(),
+        ).result
+        payload = as_payload(wired, slot_option_id="a")
+        self.assertIs(AGG.collect_decisions(payload), payload)
+        self.assertIs(AGG.collect_decisions(payload, None), payload)
+        self.assertEqual(AGG.collect_decisions(payload).slot_option_id, "a")
+
     def test_theme_errors_do_not_cancel_kept_tags(self):
         upstream = run_theme(
             theme_json=read_example("theme.art_style.json"),

@@ -1229,8 +1229,10 @@ function applyThemePlan(nodes) {
   return plan;
 }
 
-// Rename and hide option sockets to match theme_json. Invalid JSON leaves them.
-// This does not call reconcileThemeIds.
+// Rename option sockets to match theme_json. Unused pads stay visible as "·".
+// Frontend 1.57.6 drops a wire when output.hidden is set or output.links is
+// rewritten, so relinkOptionSlots does neither. Invalid JSON leaves sockets
+// alone. This does not call reconcileThemeIds.
 function syncOptionOutputs(node) {
   if (!isThemeNode(node)) return;
   orderThemePromptInputs(node);

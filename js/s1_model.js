@@ -528,10 +528,27 @@ export function planOptionOutputs(themeJson) {
         hidden: false,
       });
     } else {
+      // `hidden` marks an unused pad in the plan. relinkOptionSlots does not
+      // copy it onto `output.hidden`: ComfyUI frontend 1.57.6 keeps link truth
+      // in `graph.links`, and hiding a socket drops wires.
       slots.push({ index, option_id: "", name: "", type: DECISION_TYPE, hidden: true });
     }
   }
   return { ok: true, slots, reportIndex: REPORT_OUTPUT_INDEX };
+}
+
+/** Visible label for an option pad that theme_json does not use. */
+export const UNUSED_OPTION_LABEL = "·";
+
+function sameNodeId(left, right) {
+  if (left == null || right == null) return false;
+  return String(left) === String(right);
+}
+
+function asSlot(value) {
+  if (typeof value === "number" && Number.isInteger(value)) return value;
+  if (typeof value === "string" && /^-?\d+$/.test(value)) return Number(value);
+  return null;
 }
 
 function linkParts(link) {
@@ -545,20 +562,29 @@ function linkParts(link) {
     };
   }
   if (link && typeof link === "object") {
+    // Legacy LiteGraph objects use origin_id. Frontend 1.57 LLink state and
+    // some in-memory copies use originId. Either one is the wire.
     return {
       id: link.id,
-      originId: link.origin_id,
-      originSlot: link.origin_slot,
-      targetId: link.target_id,
-      targetSlot: link.target_slot,
+      originId: link.origin_id != null ? link.origin_id : link.originId,
+      originSlot: link.origin_slot != null ? link.origin_slot : link.originSlot,
+      targetId: link.target_id != null ? link.target_id : link.targetId,
+      targetSlot: link.target_slot != null ? link.target_slot : link.targetSlot,
     };
   }
   return null;
 }
 
 function writeOriginSlot(link, slot) {
-  if (Array.isArray(link)) link[2] = slot;
-  else if (link && typeof link === "object") link.origin_slot = slot;
+  if (Array.isArray(link)) {
+    link[2] = slot;
+    return;
+  }
+  if (!link || typeof link !== "object") return;
+  const hasSnake = "origin_slot" in link;
+  const hasCamel = "originSlot" in link;
+  if (hasSnake || !hasCamel) link.origin_slot = slot;
+  if (hasCamel) link.originSlot = slot;
 }
 
 function eachGraphLink(graph, visit) {
@@ -566,32 +592,68 @@ function eachGraphLink(graph, visit) {
   if (!links) return;
   if (Array.isArray(links)) {
     for (let index = 0; index < links.length; index += 1) {
-      if (links[index]) visit(links[index], index, "array");
+      if (links[index]) visit(links[index]);
+    }
+    return;
+  }
+  // Frontend 1.57 stores links in a Map (proxied so links[id] still works).
+  // Object.keys on a raw Map is empty, so the Map is the source of truth.
+  if (typeof links.entries === "function" && typeof links.get === "function") {
+    for (const [, link] of links.entries()) {
+      if (link) visit(link);
     }
     return;
   }
   for (const key of Object.keys(links)) {
-    if (links[key]) visit(links[key], key, "map");
+    if (links[key]) visit(links[key]);
   }
 }
 
-function nodeById(graph, id) {
-  if (typeof graph?.getNodeById === "function") return graph.getNodeById(id);
-  const nodes = graph?._nodes || graph?.nodes || [];
-  return nodes.find((node) => node && node.id === id) || null;
+function outputHasLinks(output) {
+  if (!output) return false;
+  const links = output.links;
+  if (Array.isArray(links) && links.length) return true;
+  if (links != null && links !== false && !Array.isArray(links)) return true;
+  return false;
 }
 
-function dropGraphLink(graph, link, key, kind) {
-  if (!graph?.links) return;
-  const parts = linkParts(link);
-  if (kind === "array") graph.links[key] = null;
-  else delete graph.links[key];
-  if (!parts) return;
-  const target = nodeById(graph, parts.targetId);
-  const input = target?.inputs?.[parts.targetSlot];
-  if (!input) return;
-  if (input.link === parts.id) input.link = null;
-  if (Array.isArray(input.links)) input.links = input.links.filter((item) => item !== parts.id);
+function linksAssignmentDropsWires(output) {
+  // NodeOutputSlot.links in frontend 1.57 is a setter. Assigning an array
+  // that omits an id disconnects that link in the link store.
+  let cursor = output;
+  while (cursor && cursor !== Object.prototype) {
+    const desc = Object.getOwnPropertyDescriptor(cursor, "links");
+    if (desc) return typeof desc.set === "function";
+    cursor = Object.getPrototypeOf(cursor);
+  }
+  return false;
+}
+
+function forgetPlainLink(output, id) {
+  if (!output || linksAssignmentDropsWires(output) || !Array.isArray(output.links)) return;
+  const index = output.links.indexOf(id);
+  if (index >= 0) output.links.splice(index, 1);
+}
+
+function rememberPlainLink(output, id) {
+  if (!output || linksAssignmentDropsWires(output)) return;
+  if (Array.isArray(output.links)) {
+    if (!output.links.includes(id)) output.links.push(id);
+    return;
+  }
+  if (output.links == null) output.links = [id];
+}
+
+function liveOriginSlots(node) {
+  const live = new Set();
+  eachGraphLink(node?.graph, (link) => {
+    const parts = linkParts(link);
+    if (!parts || !sameNodeId(parts.originId, node.id)) return;
+    const index = asSlot(parts.originSlot);
+    if (index == null || index < 0 || index >= REPORT_OUTPUT_INDEX) return;
+    live.add(index);
+  });
+  return live;
 }
 
 function ensureOutput(outputs, index, type) {
@@ -602,26 +664,26 @@ function ensureOutput(outputs, index, type) {
   return outputs[index];
 }
 
-function outputHasLinks(output) {
-  if (!output) return false;
-  if (Array.isArray(output.links) && output.links.length) return true;
-  if (output.links != null && output.links !== false && !Array.isArray(output.links)) return true;
-  return false;
-}
-
 /**
  * Rename option sockets and retarget wires by option id.
  *
  * The first sync (no output has s1OptionId) stamps ids by index and does not
- * move links. A later sync moves graph.links origin_slot to the option's new
- * index and drops a link whose option disappeared. Links on the report socket
- * (index 32) stay put. A report_json name alone does not count as a prior sync.
- * A live wire is not dropped because a sibling slot is hidden, and a socket
- * that still has links is not marked hidden.
+ * move or delete links. A later sync moves graph.links origin_slot /
+ * originSlot to the option's new index. A link with no previous s1OptionId
+ * stays on its slot so the stamp can claim it. A link whose option id is
+ * gone from theme_json stays connected too: deleting it, or rewriting
+ * output.links, is what dropped Theme Collect wires on frontend 1.57.6.
+ * Links on the report socket (index 32) stay put. A report_json name alone
+ * does not count as a prior sync.
+ *
+ * Live means output.links or a graph.links entry whose origin is this node
+ * and this slot (origin_id/originId, origin_slot/originSlot). Frontend 1.57
+ * often has the wire only in graph.links. Unused pads stay visible, labeled
+ * "·", with output.hidden left false. Hiding them still dropped links.
  */
 export function relinkOptionSlots(node, slots) {
   if (!node || !Array.isArray(slots) || slots.length < MAX_OPTION_OUTPUTS) {
-    return { ok: false, first: true, moved: 0, dropped: 0 };
+    return { ok: false, first: true, moved: 0, dropped: 0, kept: 0 };
   }
   if (!Array.isArray(node.outputs)) node.outputs = [];
   const outputs = node.outputs;
@@ -635,61 +697,61 @@ export function relinkOptionSlots(node, slots) {
   }
   let moved = 0;
   let dropped = 0;
+  let kept = 0;
   if (!first && node.graph) {
     const nextIndex = new Map();
     slots.forEach((slot, index) => {
-      // Keep a mapping even when the planned slot is hidden so a live wire on
-      // that option id is retargeted instead of dropped.
-      if (slot?.option_id) nextIndex.set(String(slot.option_id), index);
+      if (index < MAX_OPTION_OUTPUTS && slot?.option_id) nextIndex.set(String(slot.option_id), index);
     });
-    const pending = [];
-    eachGraphLink(node.graph, (link, key, kind) => {
+    const jobs = [];
+    eachGraphLink(node.graph, (link) => {
       const parts = linkParts(link);
-      if (!parts || parts.originId !== node.id) return;
-      if (typeof parts.originSlot !== "number" || parts.originSlot >= REPORT_OUTPUT_INDEX) return;
-      const optionId = previous[parts.originSlot] || "";
+      if (!parts || !sameNodeId(parts.originId, node.id)) return;
+      const from = asSlot(parts.originSlot);
+      if (from == null || from < 0 || from >= REPORT_OUTPUT_INDEX) return;
+      const optionId = previous[from] || "";
+      // Empty id: this wire was never stamped. Leave it here. The loop below
+      // writes s1OptionId for the slot without removing the graph link.
       if (!optionId) return;
-      pending.push({
-        link,
-        key,
-        kind,
-        id: parts.id,
-        from: parts.originSlot,
-        to: nextIndex.has(optionId) ? nextIndex.get(optionId) : -1,
-      });
+      if (!nextIndex.has(optionId)) {
+        // Option is gone and the wire is still in graph.links. Keep it.
+        kept += 1;
+        return;
+      }
+      const to = nextIndex.get(optionId);
+      if (to === from) return;
+      jobs.push({ link, id: parts.id, from, to });
     });
-    for (const item of pending) {
-      const fromOutput = outputs[item.from];
-      if (fromOutput && Array.isArray(fromOutput.links)) {
-        fromOutput.links = fromOutput.links.filter((id) => id !== item.id);
-      }
-      if (item.to < 0) {
-        dropGraphLink(node.graph, item.link, item.key, item.kind);
-        dropped += 1;
-        continue;
-      }
-      writeOriginSlot(item.link, item.to);
-      const dest = ensureOutput(outputs, item.to, DECISION_TYPE);
-      if (!Array.isArray(dest.links)) dest.links = dest.links == null ? [] : [dest.links];
-      if (!dest.links.includes(item.id)) dest.links.push(item.id);
-      if (item.from !== item.to) moved += 1;
+    for (const job of jobs) {
+      // Do not assign output.links. On frontend 1.57 that setter disconnects
+      // any id missing from the new array, including the wire being moved.
+      forgetPlainLink(outputs[job.from], job.id);
+      writeOriginSlot(job.link, job.to);
+      rememberPlainLink(ensureOutput(outputs, job.to, DECISION_TYPE), job.id);
+      moved += 1;
     }
   }
+  const liveSlots = liveOriginSlots(node);
   for (let index = 0; index < MAX_OPTION_OUTPUTS; index += 1) {
     const slot = slots[index];
     const output = ensureOutput(outputs, index, DECISION_TYPE);
-    const live = outputHasLinks(output);
-    output.name = slot.hidden && !live ? "" : slot.name || output.name || "";
+    const live = outputHasLinks(output) || liveSlots.has(index);
+    const plannedUnused = Boolean(slot.hidden);
+    if (!plannedUnused && slot.name) output.name = slot.name;
+    else if (plannedUnused && !live) output.name = UNUSED_OPTION_LABEL;
+    else if (!output.name) output.name = UNUSED_OPTION_LABEL;
     output.label = output.name;
     output.type = DECISION_TYPE;
-    output.hidden = Boolean(slot.hidden) && !live;
+    // Never hide. Frontend 1.57.6 does not treat output.hidden as a safe
+    // way to collapse pads; a hidden socket loses its graph.links entry.
+    output.hidden = false;
     output.s1OptionId = slot.option_id || "";
   }
   const report = ensureOutput(outputs, REPORT_OUTPUT_INDEX, "STRING");
   if (!report.name) report.name = "report_json";
   if (!report.type || report.type === DECISION_TYPE) report.type = "STRING";
   report.hidden = false;
-  return { ok: true, first, moved, dropped };
+  return { ok: true, first, moved, dropped, kept };
 }
 
 /**
