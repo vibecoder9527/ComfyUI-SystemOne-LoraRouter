@@ -1319,6 +1319,41 @@ console.log("ok");
         self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
         self.assertIn("ok", completed.stdout)
 
+    def test_lora_library_editor_shows_readonly_id_and_one_strength(self):
+        editors = (ROOT / "js" / "s1_editors.js").read_text(encoding="utf-8")
+        start = editors.index("function renderLoras()")
+        end = editors.index("function renderBinding(")
+        body = editors[start:end]
+        self.assertNotIn('field("lora_id"', body)
+        self.assertNotIn('field("strength_model"', body)
+        self.assertNotIn('field("strength_clip"', body)
+        self.assertIn('readOnlyLine("lora_id"', body)
+        self.assertIn("LoRA ${index + 1} · ${entry.lora_id}", body)
+        self.assertIn("strength (model & clip)", body)
+        self.assertIn("${path}.strength", body)
+        self.assertIn("assignLoraIds(state.model)", editors)
+        readonly_start = editors.index("function readOnlyLine(")
+        readonly_end = editors.index("function displayedStrength(")
+        readonly = editors[readonly_start:readonly_end]
+        self.assertIn("input.readOnly = true", readonly)
+        self.assertNotIn("dataset.path", readonly)
+        binding_end = editors.index("function renderOption(")
+        binding = editors[end:binding_end]
+        self.assertIn('field("lora_id"', binding)
+        self.assertIn('field("strength_model"', binding)
+        self.assertIn('field("strength_clip"', binding)
+        self.assertIn("Blank strengths use the LoRA Library defaults.", binding)
+        node = shutil.which("node")
+        if node is None:
+            return
+        checked = subprocess.run(
+            [node, "--check", str(ROOT / "js" / "s1_editors.js")],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(checked.returncode, 0, checked.stderr)
+
     def test_sequence_editor_puts_negative_prompt_under_positive(self):
         editors = (ROOT / "js" / "s1_editors.js").read_text(encoding="utf-8")
         positive_at = editors.index('promptField("positive"')

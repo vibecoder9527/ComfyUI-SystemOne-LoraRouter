@@ -7,6 +7,7 @@ import {
   ACTION_TYPES,
   SELECT_MODES,
   WHEN_OPS,
+  assignLoraIds,
   blankAction,
   blankBinding,
   blankDependency,
@@ -91,6 +92,10 @@ const CSS = `
   border-radius: 4px;
   padding: 4px 6px;
   font: inherit;
+}
+.s1-editor input[readonly] {
+  cursor: default;
+  border-style: dashed;
 }
 .s1-editor textarea { resize: vertical; }
 .s1-editor textarea.s1-code, .s1-editor textarea.s1-raw {
@@ -229,6 +234,43 @@ function hint(text) {
 function showNumber(value) {
   if (value === null || value === undefined) return "";
   return String(value);
+}
+
+function readOnlyLine(label, value) {
+  const wrap = el("div", "s1-field");
+  wrap.append(el("span", "s1-label", label));
+  const input = document.createElement("input");
+  input.type = "text";
+  input.value = value ?? "";
+  input.readOnly = true;
+  input.tabIndex = -1;
+  input.setAttribute("aria-readonly", "true");
+  input.spellcheck = false;
+  input.classList.add("s1-readonly");
+  wrap.append(input);
+  return wrap;
+}
+
+function displayedStrength(entry) {
+  if (!entry) return "";
+  const edited = Object.prototype.hasOwnProperty.call(entry, "strength");
+  if (edited && entry.strength !== "" && entry.strength !== null && entry.strength !== undefined) {
+    return entry.strength;
+  }
+  if (entry.strength_model !== undefined && entry.strength_model !== null && entry.strength_model !== "") {
+    return entry.strength_model;
+  }
+  return "";
+}
+
+function strengthsDiffer(entry) {
+  const clip = entry?.strength_clip;
+  if (clip === undefined || clip === null || clip === "") return false;
+  const shown = displayedStrength(entry);
+  if (shown === undefined || shown === null || shown === "") return false;
+  const modelValue = Number(shown);
+  const clipValue = Number(clip);
+  return Number.isFinite(modelValue) && Number.isFinite(clipValue) && modelValue !== clipValue;
 }
 
 function field(label, path, value, options = {}) {
@@ -533,6 +575,9 @@ function renderLoras() {
   bodyEl.append(
     hint("The name field stores the relative file name, the same string as the stock Lora Loader. Type it, or pick from Browse loras."),
   );
+  bodyEl.append(
+    hint("lora_id is assigned automatically (lora_1, lora_2, and so on) and is read-only. Existing ids are kept. One strength writes both strength_model and strength_clip."),
+  );
   if (loraCatalog.status === "loading") bodyEl.append(hint("Loading the LoRA list from ComfyUI…"));
   else if (!names.length) bodyEl.append(hint(loraCatalog.note || EMPTY_LORA_HINT));
   bodyEl.append(button("Refresh loras", "refresh-loras"));
@@ -540,15 +585,15 @@ function renderLoras() {
     const path = `loras.${index}`;
     const title = entry.lora_id ? `LoRA ${index + 1} · ${entry.lora_id}` : `LoRA ${index + 1}`;
     const box = card(title, listButtons("loras", index, state.model.loras.length), [
-      field("lora_id", `${path}.lora_id`, entry.lora_id, { mono: true }),
+      readOnlyLine("lora_id", entry.lora_id || ""),
       loraNameField(path, entry.name),
-      row(
-        field("strength_model", `${path}.strength_model`, showNumber(entry.strength_model), { decimal: true }),
-        field("strength_clip", `${path}.strength_clip`, showNumber(entry.strength_clip), { decimal: true }),
-      ),
+      field("strength (model & clip)", `${path}.strength`, showNumber(displayedStrength(entry)), { decimal: true }),
       field("tags", `${path}.tags`, (entry.tags || []).join(", "), { kind: "tags" }),
       field("enabled_default", `${path}.enabled_default`, entry.enabled_default !== false, { check: true }),
     ]);
+    if (strengthsDiffer(entry)) {
+      box.append(hint("strength_clip differs. Apply writes this strength to both strength_model and strength_clip."));
+    }
     if (entry.meta && Object.keys(entry.meta).length) {
       box.append(hint("meta is kept on Apply and is not edited here."));
     }
@@ -923,7 +968,10 @@ function onClick(event) {
     syncFromDom();
     const list = getByPath(state.model, target.dataset.list);
     const factory = FACTORIES[target.dataset.factory];
-    if (Array.isArray(list) && factory) list.push(factory());
+    if (Array.isArray(list) && factory) {
+      list.push(factory());
+      if (target.dataset.factory === "lora") assignLoraIds(state.model);
+    }
     renderBody();
     return;
   }
