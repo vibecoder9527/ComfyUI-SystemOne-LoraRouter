@@ -1,19 +1,23 @@
-"""Skeleton tests: schema, stub client, dependency walk, node registration.
+"""Tests: schema, live HTTP client (mocked), dependency walk, node registration.
 
 Run from the repo root: python -m unittest tests.test_skeleton
+Unittest never opens a live SystemOne socket and never needs a real API key.
 """
 
 from __future__ import annotations
 
 import importlib
 import importlib.util
+import io
 import json
 import os
 import subprocess
 import sys
 import unittest
+import urllib.error
 import uuid
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGE_NAME = "s1_lora_router_skeleton"
@@ -75,7 +79,56 @@ class CountingClient(CLIENT.SystemOneClient):
 
     def decide(self, state, questions):
         self.calls.append((state, questions))
-        return super().decide(state, questions)
+        answers = {
+            qid: CLIENT._canned_answer(qid, question)
+            for qid, question in questions.items()
+        }
+        return {"stub": False, "answers": answers}
+
+
+class FakeHTTPResponse:
+    def __init__(self, body, status=200, headers=None):
+        if isinstance(body, (bytes, bytearray)):
+            raw = bytes(body)
+        elif isinstance(body, str):
+            raw = body.encode("utf-8")
+        else:
+            raw = json.dumps(body).encode("utf-8")
+        self._body = raw
+        self.status = status
+        self.headers = headers or {}
+
+    def read(self):
+        return self._body
+
+    def getcode(self):
+        return self.status
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def _payload_from_request(req):
+    return json.loads(req.data.decode("utf-8"))
+
+
+def _canned_http_body(req):
+    body = _payload_from_request(req)
+    return {
+        "model": body.get("model"),
+        "answers": {
+            qid: CLIENT._canned_answer(qid, question)
+            for qid, question in body["questions"].items()
+        },
+        "usage": {"input_tokens": 12, "output_tokens": 0},
+    }
+
+
+def _canned_urlopen(req, timeout=None):
+    return FakeHTTPResponse(_canned_http_body(req))
 
 
 class FixedChoiceClient(CLIENT.SystemOneClient):
@@ -246,44 +299,154 @@ class ClientTests(unittest.TestCase):
         self.assertEqual(CLIENT.resolve_model_name("  "), CLIENT.SKELETON_MODEL_FALLBACK)
         self.assertEqual(CLIENT.resolve_model_name("live-model"), "live-model")
 
-    def test_canned_decide_does_not_leak_the_key(self):
+    def test_decide_posts_json_and_parses_choice_and_noul(self):
         secret = "sekret-token-xyz"
         client = CLIENT.SystemOneClient(api_key=secret, model="")
-        with self.assertRaises(CLIENT.SystemOneError):
-            client.decide({"positive": "", "negative": ""}, {})
-        too_many = {f"q{i}": {"type": "noul"} for i in range(33)}
-        with self.assertRaises(CLIENT.SystemOneError):
-            client.decide({"positive": "p", "negative": ""}, too_many)
-        with self.assertRaises(CLIENT.SystemOneError):
-            client.decide({"positive": "p", "negative": ""}, {"q": {"type": "score"}})
-        result = client.decide(
-            {"positive": "p", "negative": ""},
-            {
-                "s1": {"type": "choice", "criteria": {"anime": "a", "real": "b"}},
-                "s2__a": {"type": "noul"},
-            },
-        )
-        self.assertTrue(result["stub"])
+        self.assertFalse(client.IS_STUB)
+        questions = {
+            "s1": {"type": "choice", "criteria": {"anime": "a", "real": "b"}},
+            "s2__a": {"type": "noul"},
+        }
+        seen = {}
+
+        def urlopen(req, timeout=None):
+            seen["req"] = req
+            seen["timeout"] = timeout
+            body = _payload_from_request(req)
+            self.assertEqual(body["model"], CLIENT.SKELETON_MODEL_FALLBACK)
+            self.assertEqual(body["state"], {"positive": "p", "negative": ""})
+            self.assertEqual(set(body["questions"]), {"s1", "s2__a"})
+            return FakeHTTPResponse(
+                {
+                    "model": "live-model-echo",
+                    "answers": {
+                        "s1": {
+                            "type": "choice",
+                            "choice": "anime",
+                            "probabilities": {"anime": 0.9, "real": 0.1},
+                            "confidence": 0.8,
+                            "extra": "kept",
+                        },
+                        "s2__a": {"type": "noul", "noul": 0.7},
+                    },
+                    "usage": {"input_tokens": 9, "output_tokens": 0},
+                }
+            )
+
+        with mock.patch("urllib.request.urlopen", side_effect=urlopen):
+            result = client.decide({"positive": "p", "negative": ""}, questions)
+        req = seen["req"]
+        self.assertEqual(seen["timeout"], CLIENT.DEFAULT_TIMEOUT)
+        self.assertEqual(req.get_full_url(), CLIENT.DEFAULT_ENDPOINT)
+        sent_headers = {key.lower(): value for key, value in req.header_items()}
+        self.assertEqual(sent_headers["authorization"], f"Bearer {secret}")
+        uuid.UUID(sent_headers["idempotency-key"])
+        self.assertEqual(sent_headers["content-type"], "application/json")
+        self.assertFalse(result["stub"])
         self.assertTrue(result["has_authorization"])
+        self.assertEqual(result["http_status"], 200)
         self.assertEqual(result["answers"]["s1"]["choice"], "anime")
-        self.assertEqual(result["answers"]["s1"]["confidence"], 1.0)
-        self.assertEqual(result["answers"]["s2__a"]["noul"], 1.0)
+        self.assertEqual(result["answers"]["s1"]["confidence"], 0.8)
+        self.assertEqual(result["answers"]["s1"]["probabilities"]["anime"], 0.9)
+        self.assertEqual(result["answers"]["s1"]["extra"], "kept")
+        self.assertEqual(result["answers"]["s2__a"]["noul"], 0.7)
         self.assertEqual(result["request"]["model"], CLIENT.SKELETON_MODEL_FALLBACK)
         self.assertEqual(result["request"]["state"], {"positive": "p", "negative": ""})
+        self.assertEqual(result["model"], "live-model-echo")
+        self.assertEqual(result["usage"]["input_tokens"], 9)
         uuid.UUID(result["idempotency_key"])
+        self.assertEqual(result["idempotency_key"], sent_headers["idempotency-key"])
         dumped = json.dumps(result)
         self.assertNotIn(secret, dumped)
         headers = client.build_headers(result["idempotency_key"])
         self.assertEqual(headers["Authorization"], f"Bearer {secret}")
         self.assertEqual(headers["Idempotency-Key"], result["idempotency_key"])
-        bare = CLIENT.SystemOneClient(api_key="", model="named")
-        bare_result = bare.decide({"positive": "", "negative": ""}, {"q": {"type": "noul"}})
-        self.assertFalse(bare_result["has_authorization"])
-        self.assertNotEqual(bare_result["idempotency_key"], result["idempotency_key"])
+
+    def test_decide_requires_api_key_before_socket(self):
+        client = CLIENT.SystemOneClient(api_key="", model="named")
+        with mock.patch("urllib.request.urlopen") as urlopen:
+            with self.assertRaises(CLIENT.SystemOneError) as ctx:
+                client.decide({"positive": "", "negative": ""}, {"q": {"type": "noul"}})
+        urlopen.assert_not_called()
+        self.assertIn("api_key", str(ctx.exception))
+
+    def test_decide_http_error_timeout_and_bad_json(self):
+        client = CLIENT.SystemOneClient(api_key="k", model="m", timeout=5)
+        questions = {"q": {"type": "noul"}}
+        state = {"positive": "p", "negative": ""}
+
+        def http_error(req, timeout=None):
+            headers = {"X-System-One-Error-Code": "unauthorized"}
+            raise urllib.error.HTTPError(
+                req.get_full_url(),
+                401,
+                "Unauthorized",
+                headers,
+                io.BytesIO(b'{"error":"nope"}'),
+            )
+
+        with mock.patch("urllib.request.urlopen", side_effect=http_error):
+            with self.assertRaises(CLIENT.SystemOneError) as ctx:
+                client.decide(state, questions)
+        self.assertIn("401", str(ctx.exception))
+        self.assertIn("unauthorized", str(ctx.exception))
+
+        with mock.patch("urllib.request.urlopen", side_effect=TimeoutError("timed out")):
+            with self.assertRaises(CLIENT.SystemOneError) as ctx:
+                client.decide(state, questions)
+        self.assertIn("timed out", str(ctx.exception).lower())
+        self.assertIn("5", str(ctx.exception))
+
+        with mock.patch(
+            "urllib.request.urlopen",
+            side_effect=urllib.error.URLError(TimeoutError("timed out")),
+        ):
+            with self.assertRaises(CLIENT.SystemOneError) as ctx:
+                client.decide(state, questions)
+        self.assertIn("timed out", str(ctx.exception).lower())
+
+        with mock.patch("urllib.request.urlopen", return_value=FakeHTTPResponse("not-json")):
+            with self.assertRaises(CLIENT.SystemOneError) as ctx:
+                client.decide(state, questions)
+        self.assertIn("JSON", str(ctx.exception))
+
+        with mock.patch(
+            "urllib.request.urlopen",
+            return_value=FakeHTTPResponse({"model": "m"}),
+        ):
+            with self.assertRaises(CLIENT.SystemOneError) as ctx:
+                client.decide(state, questions)
+        self.assertIn("answers", str(ctx.exception))
+
+        with mock.patch(
+            "urllib.request.urlopen",
+            return_value=FakeHTTPResponse({"answers": {"other": {"noul": 1.0}}}),
+        ):
+            with self.assertRaises(CLIENT.SystemOneError) as ctx:
+                client.decide(state, questions)
+        self.assertIn("missing answers", str(ctx.exception))
+
+    def test_decide_rejects_contract_errors_without_http(self):
+        secret = "sekret-token-xyz"
+        client = CLIENT.SystemOneClient(api_key=secret, model="")
+        with mock.patch("urllib.request.urlopen") as urlopen:
+            with self.assertRaises(CLIENT.SystemOneError):
+                client.decide({"positive": "", "negative": ""}, {})
+            too_many = {f"q{i}": {"type": "noul"} for i in range(33)}
+            with self.assertRaises(CLIENT.SystemOneError):
+                client.decide({"positive": "p", "negative": ""}, too_many)
+            with self.assertRaises(CLIENT.SystemOneError):
+                client.decide({"positive": "p", "negative": ""}, {"q": {"type": "score"}})
+            with self.assertRaises(CLIENT.SystemOneError):
+                client.decide(
+                    {"positive": "p", "negative": ""},
+                    {"s1": {"type": "choice", "criteria": {}}},
+                )
+        urlopen.assert_not_called()
 
 
 class EngineTests(unittest.TestCase):
-    def test_minimal_example_stub_picks_anime_then_character(self):
+    def test_minimal_example_picks_anime_then_character(self):
         loras = TYPES.parse_lora_library(_read("lora_library.minimal.json"))
         themes = TYPES.parse_theme_library(_read("theme_library.minimal.json"))
         before = [option.option_id for option in themes.get("character_pack").options]
@@ -321,10 +484,10 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(result.report["api"]["model"], "unspecified")
         self.assertEqual(result.report["api"]["key_source"], "widget")
         self.assertNotIn("sekret-token-xyz", ENGINE.dump_report(result.report))
+        self.assertFalse(result.report["stub"])
         notes = " ".join(result.report["notes"])
-        self.assertIn("choice", notes)
-        self.assertIn("noul", notes)
         self.assertIn("did not patch weights", notes)
+        self.assertIn("ComfyUI APIs unavailable", notes)
         self.assertEqual(len(client.calls), 2)
         _state, first = client.calls[0]
         self.assertEqual(first["s1"]["type"], "choice")
@@ -392,6 +555,7 @@ class EngineTests(unittest.TestCase):
                 sequence_json=sequence,
                 positive="",
                 strength_conflict=policy,
+                client=CountingClient(),
             )
             applied = result.report["applied"]
             self.assertEqual(len(applied), 1, policy)
@@ -725,9 +889,11 @@ class EngineTests(unittest.TestCase):
                 seen["safe_load"] = safe_load
                 return {"path": path}
 
+            dummy_clip = object()
+
             def load_lora_for_models(model, clip, lora_object, strength_model, strength_clip):
                 seen["call"] = (model, clip, lora_object, strength_model, strength_clip)
-                return (new_model, clip)
+                return (new_model, dummy_clip)
 
             return (load_lora_for_models, load_torch_file, get_full_path), None
 
@@ -834,22 +1000,24 @@ class NodeTests(unittest.TestCase):
         (theme_lib,) = theme_node.build(_read("theme_library.minimal.json"))
         model = object()
         clip = object()
-        out_model, out_clip, report_json = sequence_node.apply(
-            model=model,
-            theme_lib=theme_lib,
-            lora_lib=lora_lib,
-            positive="anime",
-            sequence_json=_read("sequence.minimal.json"),
-            api_key="sekret-token-xyz",
-            api_model="my-model",
-            clip=clip,
-        )
+        with mock.patch("urllib.request.urlopen", side_effect=_canned_urlopen):
+            out_model, out_clip, report_json = sequence_node.apply(
+                model=model,
+                theme_lib=theme_lib,
+                lora_lib=lora_lib,
+                positive="anime",
+                sequence_json=_read("sequence.minimal.json"),
+                api_key="sekret-token-xyz",
+                api_model="my-model",
+                clip=clip,
+            )
         self.assertIs(out_model, model)
         self.assertIs(out_clip, clip)
         report = json.loads(report_json)
         self.assertEqual(report["answers"]["s1"]["selected"], ["anime"])
         self.assertEqual(report["answers"]["s2"]["selected"], ["waifu_a"])
         self.assertEqual(report["api"]["model"], "my-model")
+        self.assertFalse(report["stub"])
         self.assertNotIn("sekret-token-xyz", report_json)
         self.assertIn('"answers":{', report_json)
 
