@@ -34,7 +34,8 @@ class S1ThemeSequence:
         "The API key is the api_key widget, otherwise SYSTEM_ONE_API_KEY. "
         "LoRA weights are patched with ComfyUI APIs when those are importable. "
         "on_error=passthrough returns the input MODEL and CLIP plus a debug string. "
-        "The S1 Editors sidebar, or the Open visual editor button, edits sequence_json."
+        "The S1 Editors sidebar, or the Open visual editor button, edits sequence_json "
+        "and the positive and negative prompts."
     )
 
     @classmethod

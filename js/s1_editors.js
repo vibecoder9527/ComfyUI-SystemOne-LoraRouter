@@ -170,6 +170,8 @@ const state = {
   message: "",
   tone: "",
   openLoraBrowse: "",
+  positive: "",
+  negative: "",
 };
 
 let loraCatalog = { status: "idle", names: [], note: "" };
@@ -307,8 +309,17 @@ function setPath(root, path, value) {
   cursor[parts[parts.length - 1]] = value;
 }
 
+function syncPromptsFromDom() {
+  if (!rootEl) return;
+  rootEl.querySelectorAll("[data-prompt]").forEach((input) => {
+    if (input.dataset.prompt === "positive") state.positive = input.value;
+    else if (input.dataset.prompt === "negative") state.negative = input.value;
+  });
+}
+
 function syncFromDom() {
   if (!rootEl) return;
+  syncPromptsFromDom();
   if (!state.model) {
     const raw = rootEl.querySelector("[data-raw='1']");
     if (raw) state.raw = raw.value;
@@ -630,6 +641,34 @@ function renderDependency(dependency, path, listPath, index, length) {
   return card(`Dependency ${index + 1}`, listButtons(listPath, index, length), children);
 }
 
+function promptField(name, label, value) {
+  const wrap = el("label", "s1-field");
+  wrap.append(el("span", "s1-label", label));
+  const area = document.createElement("textarea");
+  area.rows = 4;
+  area.value = value ?? "";
+  area.dataset.prompt = name;
+  wrap.append(area);
+  return wrap;
+}
+
+function renderPrompts() {
+  const box = el("section", "s1-card");
+  box.append(el("h3", null, "Prompts"));
+  box.append(
+    hint("Positive, then negative. Apply to node writes these widgets and sequence_json. They are not stored inside sequence_json."),
+  );
+  box.append(promptField("positive", "Positive prompt", state.positive));
+  box.append(promptField("negative", "Negative prompt", state.negative));
+  if (state.node) {
+    const missing = ["positive", "negative"].filter((name) => !findWidget(state.node, name));
+    if (missing.length) {
+      box.append(hint(`Widget not found on this node: ${missing.join(", ")}. Apply skips a prompt it cannot write.`));
+    }
+  }
+  return box;
+}
+
 function renderSteps() {
   bodyEl.append(hint("Dependencies are OR. Actions in a match run in order. Nothing here calls SystemOne."));
   state.model.steps.forEach((step, index) => {
@@ -676,6 +715,7 @@ function renderBody() {
     renderEmpty();
     return;
   }
+  if (state.kind === "sequence") bodyEl.append(renderPrompts());
   if (!state.model) {
     renderRaw();
     return;
@@ -711,6 +751,19 @@ function nodeLive(node) {
   return Boolean(node);
 }
 
+function writePromptWidgets(node) {
+  const missing = [];
+  for (const name of ["positive", "negative"]) {
+    const widget = findWidget(node, name);
+    if (!widget) {
+      missing.push(name);
+      continue;
+    }
+    writeWidget(node, widget, state[name] ?? "");
+  }
+  return missing;
+}
+
 function writeWidget(node, widget, text) {
   widget.value = text;
   const widgets = node.widgets || [];
@@ -741,6 +794,12 @@ function loadNode(node) {
   state.model = null;
   state.raw = "";
   state.openLoraBrowse = "";
+  state.positive = "";
+  state.negative = "";
+  if (spec?.kind === "sequence") {
+    state.positive = widgetText(findWidget(node, "positive"));
+    state.negative = widgetText(findWidget(node, "negative"));
+  }
   if (!spec) {
     setMessage("This node has no S1 editor.", "error");
     renderAll();
@@ -796,7 +855,12 @@ function applyToNode() {
   writeWidget(state.node, widget, result.json);
   state.raw = result.json;
   state.model = result.model;
-  setMessage("Applied to the node. Save the workflow to keep it.", "ok");
+  let note = "Applied to the node. Save the workflow to keep it.";
+  if (state.kind === "sequence") {
+    const missing = writePromptWidgets(state.node);
+    if (missing.length) note += ` Missing prompt widget: ${missing.join(", ")}.`;
+  }
+  setMessage(note, "ok");
   renderAll();
 }
 
@@ -882,6 +946,11 @@ function onInput(event) {
     filterLoraOptions(input);
     return;
   }
+  if (input.dataset.prompt === "positive" || input.dataset.prompt === "negative") {
+    state[input.dataset.prompt] = input.value;
+    if (state.tone === "ok") setMessage("", "");
+    return;
+  }
   if (!state.model || !input.dataset.path) return;
   if (input.dataset.kind === "tags" || input.dataset.kind === "ids") setPath(state.model, input.dataset.path, splitList(input.value));
   else if (input.type === "checkbox") setPath(state.model, input.dataset.path, input.checked);
@@ -919,14 +988,14 @@ function ensureShell() {
   headerEl = el("h2", "s1-header", "No node loaded");
   const toolbar = el("div", "s1-toolbar");
   const apply = button("Apply to node", "apply");
-  apply.title = "Write pretty JSON into the node widget";
+  apply.title = "Write the form onto the node widgets";
   const reload = button("Reload from node", "reload");
   reload.title = "Replace the form with the widget text";
   toolbar.append(apply, reload);
   messageEl = el("p", "s1-message");
   messageEl.hidden = true;
   bodyEl = el("div", "s1-body");
-  rootEl.append(headerEl, toolbar, hint("Apply writes the JSON widget. Typing alone does not."), messageEl, bodyEl);
+  rootEl.append(headerEl, toolbar, hint("Apply writes the node widgets. Typing alone does not."), messageEl, bodyEl);
   rootEl.addEventListener("click", onClick);
   rootEl.addEventListener("input", onInput);
   rootEl.addEventListener("change", onChange);

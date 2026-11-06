@@ -1118,6 +1118,30 @@ console.log("ok");
         self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
         self.assertIn("ok", completed.stdout)
 
+    def test_sequence_editor_puts_negative_prompt_under_positive(self):
+        editors = (ROOT / "js" / "s1_editors.js").read_text(encoding="utf-8")
+        positive_at = editors.index('promptField("positive"')
+        negative_at = editors.index('promptField("negative"')
+        self.assertLess(positive_at, negative_at)
+        self.assertIn("Positive prompt", editors)
+        self.assertIn("Negative prompt", editors)
+        self.assertIn("writePromptWidgets", editors)
+        self.assertIn("sequence_json", editors)
+        self.assertNotIn("S1_THEME_SEQ", editors)
+        description = PKG.NODE_CLASS_MAPPINGS["S1ThemeSequence"].DESCRIPTION
+        self.assertIn("positive", description)
+        self.assertIn("negative", description)
+        node = shutil.which("node")
+        if node is None:
+            self.skipTest("node is not installed")
+        checked = subprocess.run(
+            [node, "--check", str(ROOT / "js" / "s1_editors.js")],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(checked.returncode, 0, checked.stderr)
+
     def test_nodes_run_example_and_passthrough_errors(self):
         lora_node = PKG.NODE_CLASS_MAPPINGS["S1LoraLibrary"]()
         theme_node = PKG.NODE_CLASS_MAPPINGS["S1ThemeLibrary"]()
