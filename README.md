@@ -31,7 +31,7 @@ The nodes show up under **SystemOne → LoraRouter**:
 | Theme Library | `S1ThemeLibrary` | `S1_THEME_LIB` |
 | Theme Sequence | `S1ThemeSequence` | `MODEL`, `CLIP`, `STRING` (`report_json`) |
 
-Wire both libraries into Theme Sequence, along with `model`, the positive prompt (`positive`), and `sequence_json`. Connect the `CLIP` output only when a clip input is connected too. With no clip input, the second output is `None`.
+Wire both libraries into Theme Sequence, along with `model`, the positive prompt (`positive`), and `sequence_json`. The negative prompt (`negative`) is the widget directly under `positive`. A blank negative is sent as `""`. Connect the `CLIP` output only when a clip input is connected too. With no clip input, the second output is `None`.
 
 Set the API key on Theme Sequence, or export `SYSTEM_ONE_API_KEY` and leave the widget blank. A non-empty widget wins. The default endpoint is `https://system-one.dev/v1/systemone`. A blank `api_model` becomes the fallback `unspecified`. SPEC §6 leaves the production model id open, so this package does not hard-code one. A live SystemOne call requires a key.
 
@@ -67,16 +67,31 @@ Restart ComfyUI after installing so it loads `js/` (`WEB_DIRECTORY`).
 
 | Node | Widget the editor writes | What the form edits |
 | --- | --- | --- |
-| LoRA Library | `library_json` | LoRA entries: id, file name, strengths, tags, enabled default |
+| LoRA Library | `library_json` | LoRA entries: id, file name (`name`), strengths, tags, enabled default |
 | Theme Library | `library_json` | Themes, options, select mode, bindings, fallback and none ids |
-| Theme Sequence | `sequence_json` | Steps, theme id, and dependencies |
+| Theme Sequence | `sequence_json`, `positive`, `negative` | Prompts (positive, then negative), steps, theme id, and dependencies |
 
 ### Using an editor
 
-- **Reload from node** reads the widget again. **Open visual editor** does that too, so unapplied form edits are replaced by the widget text.
-- **Apply to node** checks the form, writes pretty JSON into the widget, and marks the graph dirty. Typing does not write the widget.
+- **Reload from node** reads the widget again. **Open visual editor** does that too, so unapplied form edits are replaced by the widget text. On Theme Sequence it also reloads `positive` and `negative`.
+- **Apply to node** checks the form, writes pretty JSON into the widget, and marks the graph dirty. Typing does not write the widget. On Theme Sequence one Apply writes `positive`, `negative`, and `sequence_json` together. Invalid sequence JSON blocks that write, including the prompts.
 - Invalid JSON shows the error and the original text. Fix it and choose **Try form**, or keep editing the multiline widget on the node. Apply does not replace the widget until the text parses.
-- LoRA file names are typed by hand.
+
+### LoRA file name
+
+Each entry's `name` is the relative file name under ComfyUI `models/loras`, the same string the stock Lora Loader shows. SPEC has no separate path field. The picker writes that string into `name`.
+
+- Type a name yourself. The text box stays editable, and its suggestions use the same list when ComfyUI returned one.
+- **Browse loras…** opens a filterable list on that entry. Choosing a row copies the relative name into `name`. **Hide lora list** closes it.
+- **Refresh loras** asks ComfyUI again. The editor reads `/object_info` for `LoraLoader` or `LoraLoaderModelOnly` and uses the `lora_name` combo. If that list is missing, it tries `api.getModels("loras")` and then `/models/loras`.
+- **Apply to node** is what saves the name into `library_json`. The picker does not copy or rename files on disk.
+- A name that is not in the current list is kept. Apply still writes it.
+
+### Prompts on Theme Sequence
+
+The Theme Sequence editor starts with **Prompts**: the positive textarea, then the negative textarea directly under it. Those boxes are the node widgets `positive` and `negative`. They are not fields inside `sequence_json`.
+
+On the node, `negative` is a required multiline string directly under `positive`. `clip` stays optional. A blank negative is still sent as `""`.
 
 ### Known limitations
 
@@ -84,8 +99,10 @@ Restart ComfyUI after installing so it loads `js/` (`WEB_DIRECTORY`).
 - `rewrite_options` is a JSON object (`keep_option_ids`, `add_options`, `remove_option_ids`, `patch_bindings`). The other action types have fields.
 - Requires a ComfyUI build that loads `WEB_DIRECTORY` extensions. Restart ComfyUI after install.
 - The sidebar API differs across ComfyUI versions. If `registerSidebarTab` is missing, the node button opens a modal instead.
-- Does not browse the `loras/` folder. Type file names manually.
-- The multiline JSON widgets remain the power-user path. Graph serialization is unchanged: the workflow stores the JSON on the node.
+- The LoRA list needs a running ComfyUI. It is empty when ComfyUI is offline, when `/object_info` has no `lora_name` list, or when `models/loras` has no files. The editor stays usable: type the relative name. Typed names still work and are what `name` stores.
+- The list is relative names (`folder/file.safetensors`), not a full disk path. **Refresh loras** after you add files. ComfyUI rebuilds that combo when `/object_info` is requested.
+- Workflows saved before `negative` moved under `positive` may have stored widget values by position. Builds that save widget names reload the right fields. If an old workflow only has an ordered values list, check that `negative` did not land in `sequence_json` the first time you open it.
+- The multiline JSON widgets remain the power-user path. Graph serialization is unchanged: the workflow stores the JSON on the node. There is still no fourth sequence wire.
 - `meta` on a LoRA entry is kept on Apply, and the form does not edit it.
 
 ## Examples
