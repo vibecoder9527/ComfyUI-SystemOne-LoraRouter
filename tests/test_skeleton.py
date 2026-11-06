@@ -991,6 +991,19 @@ class NodeTests(unittest.TestCase):
             PKG.NODE_DISPLAY_NAME_MAPPINGS["S1ThemeSequence"],
             "Theme Sequence",
         )
+        self.assertEqual(PKG.WEB_DIRECTORY, "./js")
+        self.assertEqual(
+            list(PKG.__all__),
+            ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS", "WEB_DIRECTORY"],
+        )
+        for node in mappings.values():
+            self.assertIn("visual editor", node.DESCRIPTION)
+        scripts = sorted(path.name for path in (ROOT / "js").glob("*.js"))
+        self.assertEqual(scripts, ["s1_editors.js", "s1_model.js"])
+        extension = (ROOT / "js" / "s1_editors.js").read_text(encoding="utf-8")
+        self.assertIn('name: "SystemOne.LoraRouter.UI"', extension)
+        self.assertIn("registerSidebarTab", extension)
+        self.assertIn("Open visual editor", extension)
 
     def test_nodes_run_example_and_passthrough_errors(self):
         lora_node = PKG.NODE_CLASS_MAPPINGS["S1LoraLibrary"]()
