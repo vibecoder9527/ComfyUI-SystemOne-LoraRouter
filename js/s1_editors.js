@@ -8,6 +8,7 @@ import {
   SELECT_MODES,
   WHEN_OPS,
   assignLoraIds,
+  assignThemeIds,
   blankAction,
   blankBinding,
   blankDependency,
@@ -16,6 +17,7 @@ import {
   blankStep,
   blankTheme,
   commitModel,
+  fieldPathsFromError,
   loraNamesFromInfo,
   loraNamesFromModels,
   parseEditorDocument,
@@ -132,6 +134,17 @@ const CSS = `
 }
 .s1-editor .s1-message.is-error { border-color: #c45; }
 .s1-editor .s1-message.is-ok { border-color: #3a8; }
+.s1-editor .s1-field.s1-invalid {
+  outline: 2px solid #e23;
+  border-radius: 4px;
+}
+.s1-editor .s1-field.s1-invalid input,
+.s1-editor .s1-field.s1-invalid textarea,
+.s1-editor .s1-field.s1-invalid select,
+.s1-editor textarea.s1-raw.s1-invalid {
+  outline: 2px solid #e23;
+  border-color: #e23;
+}
 .s1-editor-modal {
   position: fixed;
   inset: 0;
@@ -166,6 +179,9 @@ const CSS = `
 const EMPTY_LORA_HINT =
   "No LoRA files listed. Needs a running ComfyUI. The list is empty when ComfyUI is offline or models/loras has no files. Typed names still work.";
 
+const WRITE_DELAY_MS = 220;
+const POLL_MS = 500;
+
 const state = {
   node: null,
   kind: null,
@@ -177,6 +193,11 @@ const state = {
   openLoraBrowse: "",
   positive: "",
   negative: "",
+  clean: true,
+  invalidPaths: [],
+  writeTimer: null,
+  pollTimer: null,
+  writing: false,
 };
 
 let loraCatalog = { status: "idle", names: [], note: "" };
@@ -236,8 +257,9 @@ function showNumber(value) {
   return String(value);
 }
 
-function readOnlyLine(label, value) {
+function readOnlyLine(label, value, markPath) {
   const wrap = el("div", "s1-field");
+  if (markPath) wrap.dataset.mark = markPath;
   wrap.append(el("span", "s1-label", label));
   const input = document.createElement("input");
   input.type = "text";
@@ -275,6 +297,7 @@ function strengthsDiffer(entry) {
 
 function field(label, path, value, options = {}) {
   const wrap = el("label", "s1-field");
+  wrap.dataset.mark = path;
   const span = el("span", "s1-label", label);
   let input;
   if (options.check) {
@@ -288,7 +311,7 @@ function field(label, path, value, options = {}) {
     for (const choice of options.select) {
       const option = document.createElement("option");
       option.value = choice;
-      option.textContent = choice;
+      option.textContent = choice === "" ? "(not set)" : choice;
       input.append(option);
     }
     input.value = value ?? options.select[0];
@@ -563,9 +586,9 @@ function applyLoraPick(select) {
   const textInput = select.closest?.(".s1-field")?.querySelector("input[data-path]");
   if (textInput) textInput.value = name;
   setPath(state.model, select.dataset.loraPick, name);
-  if (state.tone === "ok") setMessage("", "");
   syncFromDom();
   renderBody();
+  scheduleLiveWrite();
 }
 
 function renderLoras() {
@@ -592,10 +615,10 @@ function renderLoras() {
       field("enabled_default", `${path}.enabled_default`, entry.enabled_default !== false, { check: true }),
     ]);
     if (strengthsDiffer(entry)) {
-      box.append(hint("strength_clip differs. Apply writes this strength to both strength_model and strength_clip."));
+      box.append(hint("strength_clip differs. The next valid write copies this strength to both strength_model and strength_clip."));
     }
     if (entry.meta && Object.keys(entry.meta).length) {
-      box.append(hint("meta is kept on Apply and is not edited here."));
+      box.append(hint("meta is kept when a valid edit is written, and the form does not edit it."));
     }
     bodyEl.append(box);
   });
@@ -617,7 +640,7 @@ function renderOption(option, path, listPath, index, length) {
   const title = option.option_id ? `Option ${index + 1} · ${option.option_id}` : `Option ${index + 1}`;
   const bindingsPath = `${path}.lora_bindings`;
   const children = [
-    field("option_id", `${path}.option_id`, option.option_id, { mono: true }),
+    readOnlyLine("option_id", option.option_id || "", `${path}.option_id`),
     field("label", `${path}.label`, option.label ?? ""),
     field("description", `${path}.description`, option.description ?? "", { rows: 3 }),
   ];
@@ -628,22 +651,35 @@ function renderOption(option, path, listPath, index, length) {
   return card(title, listButtons(listPath, index, length), children);
 }
 
+function noneField(themePath, theme) {
+  const ids = [];
+  for (const option of theme.options || []) {
+    if (option?.option_id && !ids.includes(option.option_id)) ids.push(option.option_id);
+  }
+  const current = theme.none_option_id || "";
+  const choices = [""].concat(ids);
+  if (current && !choices.includes(current)) choices.push(current);
+  return field("none_option_id", `${themePath}.none_option_id`, current, { select: choices });
+}
+
 function renderThemes() {
+  bodyEl.append(
+    hint(
+      "theme_id and option_id are assigned automatically (theme_1, option_1, and so on) and are read-only. Existing ids are kept. Sequence steps still cite theme_id by hand.",
+    ),
+  );
   bodyEl.append(hint("Bindings store lora_id only. single asks choice; multi asks one noul per option."));
   state.model.themes.forEach((theme, index) => {
     const path = `themes.${index}`;
     const title = theme.theme_id ? `Theme ${index + 1} · ${theme.theme_id}` : `Theme ${index + 1}`;
     const optionsPath = `${path}.options`;
     const children = [
-      field("theme_id", `${path}.theme_id`, theme.theme_id, { mono: true }),
+      readOnlyLine("theme_id", theme.theme_id || "", `${path}.theme_id`),
       field("title", `${path}.title`, theme.title ?? ""),
       field("instructions", `${path}.instructions`, theme.instructions ?? "", { rows: 4 }),
       field("select_mode", `${path}.select_mode`, theme.select_mode || "single", { select: SELECT_MODES }),
-      row(
-        field("fallback_option_id", `${path}.fallback_option_id`, theme.fallback_option_id || "", { mono: true }),
-        field("none_option_id", `${path}.none_option_id`, theme.none_option_id || "", { mono: true }),
-      ),
-      hint("Fallback and none must match an option id, or stay blank."),
+      noneField(path, theme),
+      hint("none must match an option id in this theme, or stay unset. There is no fallback option."),
     ];
     (theme.options || []).forEach((option, optionIndex) => {
       children.push(renderOption(option, `${optionsPath}.${optionIndex}`, optionsPath, optionIndex, theme.options.length));
@@ -701,14 +737,14 @@ function renderPrompts() {
   const box = el("section", "s1-card");
   box.append(el("h3", null, "Prompts"));
   box.append(
-    hint("Positive, then negative. Apply to node writes these widgets and sequence_json. They are not stored inside sequence_json."),
+    hint("Positive, then negative. A valid edit writes these widgets and sequence_json. They are not stored inside sequence_json."),
   );
   box.append(promptField("positive", "Positive prompt", state.positive));
   box.append(promptField("negative", "Negative prompt", state.negative));
   if (state.node) {
     const missing = ["positive", "negative"].filter((name) => !findWidget(state.node, name));
     if (missing.length) {
-      box.append(hint(`Widget not found on this node: ${missing.join(", ")}. Apply skips a prompt it cannot write.`));
+      box.append(hint(`Widget not found on this node: ${missing.join(", ")}. A prompt without a widget is skipped.`));
     }
   }
   return box;
@@ -741,7 +777,7 @@ function renderRaw() {
   area.spellcheck = false;
   area.value = state.raw;
   bodyEl.append(
-    hint("This JSON did not fit the form. Fix it here, then choose Try form. Apply writes the node only after it parses."),
+    hint("This JSON did not fit the form. Fix it here, then choose Try form. A successful parse writes the node. Invalid JSON stays here and is not written."),
     area,
     button("Try form", "try-form"),
   );
@@ -758,16 +794,19 @@ function renderBody() {
   bodyEl.replaceChildren();
   if (!state.node || !state.kind) {
     renderEmpty();
+    applyInvalidMarks();
     return;
   }
   if (state.kind === "sequence") bodyEl.append(renderPrompts());
   if (!state.model) {
     renderRaw();
+    applyInvalidMarks();
     return;
   }
   if (state.kind === "lora") renderLoras();
   else if (state.kind === "theme") renderThemes();
   else renderSteps();
+  applyInvalidMarks();
 }
 
 function renderAll() {
@@ -804,7 +843,8 @@ function writePromptWidgets(node) {
       missing.push(name);
       continue;
     }
-    writeWidget(node, widget, state[name] ?? "");
+    const text = state[name] ?? "";
+    if (widgetText(widget) !== text) writeWidget(node, widget, text);
   }
   return missing;
 }
@@ -832,6 +872,7 @@ function writeWidget(node, widget, text) {
 }
 
 function loadNode(node) {
+  flushLiveWrite();
   const spec = specFor(node);
   state.node = node;
   state.kind = spec?.kind || null;
@@ -841,6 +882,8 @@ function loadNode(node) {
   state.openLoraBrowse = "";
   state.positive = "";
   state.negative = "";
+  state.clean = false;
+  state.invalidPaths = [];
   if (spec?.kind === "sequence") {
     state.positive = widgetText(findWidget(node, "positive"));
     state.negative = widgetText(findWidget(node, "negative"));
@@ -859,93 +902,156 @@ function loadNode(node) {
   state.raw = widgetText(widget);
   const parsed = parseEditorDocument(spec.kind, state.raw);
   if (!parsed.ok) {
+    state.clean = false;
+    state.invalidPaths = ["__raw__"].concat(fieldPathsFromError(parsed.error));
     setMessage(parsed.error, "error");
     renderAll();
     return;
   }
   state.model = parsed.model;
+  state.clean = true;
+  state.invalidPaths = [];
   setMessage("", "");
   renderAll();
 }
 
-function applyToNode() {
-  syncFromDom();
-  if (!state.node || !state.kind) {
-    setMessage("Open a node first.", "error");
-    return;
-  }
+function idSignature(model) {
+  if (!model) return "";
+  const loras = (model.loras || []).map((entry) => entry?.lora_id || "");
+  const themes = (model.themes || []).map((theme) => {
+    const options = (theme?.options || []).map((option) => option?.option_id || "");
+    return `${theme?.theme_id || ""}:${options.join(",")}`;
+  });
+  return JSON.stringify({ loras, themes });
+}
+
+function applyInvalidMarks() {
+  if (!rootEl) return;
+  const marks = new Set(state.invalidPaths || []);
+  rootEl.querySelectorAll(".s1-field").forEach((wrap) => {
+    const input = wrap.querySelector("[data-path]");
+    const path = wrap.dataset.mark || (input ? input.dataset.path : "");
+    wrap.classList.toggle("s1-invalid", Boolean(path) && marks.has(path));
+  });
+  rootEl.querySelectorAll("textarea.s1-raw").forEach((area) => {
+    area.classList.toggle("s1-invalid", marks.has("__raw__"));
+  });
+}
+
+function cancelLiveWrite() {
+  if (!state.writeTimer) return;
+  clearTimeout(state.writeTimer);
+  state.writeTimer = null;
+}
+
+function scheduleLiveWrite() {
+  state.clean = false;
+  cancelLiveWrite();
+  state.writeTimer = window.setTimeout(() => {
+    state.writeTimer = null;
+    liveWrite();
+  }, WRITE_DELAY_MS);
+}
+
+function flushLiveWrite() {
+  if (!state.writeTimer) return;
+  cancelLiveWrite();
+  liveWrite();
+}
+
+function liveWrite() {
+  if (!state.node || !state.kind) return;
   if (!nodeLive(state.node)) {
+    state.clean = false;
     setMessage("That node is no longer on the graph.", "error");
     return;
   }
   const widget = findWidget(state.node, state.widgetName);
   if (!widget) {
+    state.clean = false;
     setMessage(`Widget ${state.widgetName} was not found on this node.`, "error");
     return;
   }
-  let model = state.model;
-  if (!model) {
+  syncFromDom();
+  const hadModel = Boolean(state.model);
+  if (!state.model) {
     const parsed = parseEditorDocument(state.kind, state.raw);
     if (!parsed.ok) {
+      state.clean = false;
+      state.invalidPaths = ["__raw__"].concat(fieldPathsFromError(parsed.error));
       setMessage(parsed.error, "error");
+      applyInvalidMarks();
       return;
     }
-    model = parsed.model;
+    state.model = parsed.model;
   }
-  const result = commitModel(state.kind, model);
+  const beforeIds = idSignature(state.model);
+  const result = commitModel(state.kind, state.model);
   if (!result.ok) {
+    state.clean = false;
+    state.invalidPaths = fieldPathsFromError(result.error);
     setMessage(result.error, "error");
+    if (idSignature(state.model) !== beforeIds) {
+      renderAll();
+      return;
+    }
+    applyInvalidMarks();
     return;
   }
-  writeWidget(state.node, widget, result.json);
-  state.raw = result.json;
-  state.model = result.model;
-  let note = "Applied to the node. Save the workflow to keep it.";
-  if (state.kind === "sequence") {
-    const missing = writePromptWidgets(state.node);
-    if (missing.length) note += ` Missing prompt widget: ${missing.join(", ")}.`;
+  state.invalidPaths = [];
+  state.writing = true;
+  try {
+    if (widgetText(widget) !== result.json) writeWidget(state.node, widget, result.json);
+    if (state.kind === "sequence") writePromptWidgets(state.node);
+  } finally {
+    state.writing = false;
   }
-  setMessage(note, "ok");
-  renderAll();
+  state.raw = result.json;
+  state.clean = true;
+  const idsChanged = idSignature(result.model) !== beforeIds;
+  setMessage("", "");
+  if (!hadModel || idsChanged) {
+    state.model = result.model;
+    renderAll();
+    return;
+  }
+  applyInvalidMarks();
 }
 
-function reloadFromNode() {
-  if (!state.node) {
-    setMessage("Open a node first.", "error");
-    return;
+// ComfyUI does not expose a cheap widget-change hook. While the editor is
+// visible and the draft matches the last valid write, poll the widgets and
+// reload if something else changed them. An invalid draft is left alone.
+function pollWidgets() {
+  if (state.writing || state.writeTimer || !state.clean) return;
+  if (!editorVisible()) return;
+  if (!state.node || !state.kind || !nodeLive(state.node)) return;
+  const widget = findWidget(state.node, state.widgetName);
+  if (!widget) return;
+  const text = widgetText(widget);
+  let promptsDiffer = false;
+  if (state.kind === "sequence") {
+    const positive = widgetText(findWidget(state.node, "positive"));
+    const negative = widgetText(findWidget(state.node, "negative"));
+    promptsDiffer = positive !== state.positive || negative !== state.negative;
   }
-  if (!nodeLive(state.node)) {
-    setMessage("That node is no longer on the graph.", "error");
-    return;
-  }
-  loadNode(state.node);
-  if (state.tone !== "error") setMessage("Reloaded from the node.", "ok");
+  if (text !== state.raw || promptsDiffer) loadNode(state.node);
+}
+
+function ensurePoll() {
+  if (state.pollTimer || typeof window === "undefined") return;
+  state.pollTimer = window.setInterval(pollWidgets, POLL_MS);
 }
 
 function tryForm() {
+  cancelLiveWrite();
   syncFromDom();
-  const parsed = parseEditorDocument(state.kind, state.raw);
-  if (!parsed.ok) {
-    setMessage(parsed.error, "error");
-    return;
-  }
-  state.model = parsed.model;
-  setMessage("Loaded into the form. Apply to write it onto the node.", "ok");
-  renderBody();
+  liveWrite();
 }
 
 function onClick(event) {
   const target = event.target.closest("[data-act]");
   if (!target || !rootEl.contains(target)) return;
   const act = target.dataset.act;
-  if (act === "apply") {
-    applyToNode();
-    return;
-  }
-  if (act === "reload") {
-    reloadFromNode();
-    return;
-  }
   if (act === "try-form") {
     tryForm();
     return;
@@ -954,6 +1060,7 @@ function onClick(event) {
     if (state.model) syncFromDom();
     refreshLoraCatalog();
     renderBody();
+    scheduleLiveWrite();
     return;
   }
   if (!state.model) return;
@@ -970,9 +1077,11 @@ function onClick(event) {
     const factory = FACTORIES[target.dataset.factory];
     if (Array.isArray(list) && factory) {
       list.push(factory());
-      if (target.dataset.factory === "lora") assignLoraIds(state.model);
+      if (state.kind === "lora") assignLoraIds(state.model);
+      if (state.kind === "theme") assignThemeIds(state.model);
     }
     renderBody();
+    scheduleLiveWrite();
     return;
   }
   if (act === "remove" || act === "up" || act === "down") {
@@ -983,7 +1092,10 @@ function onClick(event) {
     if (act === "remove") list.splice(index, 1);
     if (act === "up" && index > 0) list.splice(index - 1, 0, list.splice(index, 1)[0]);
     if (act === "down" && index < list.length - 1) list.splice(index + 1, 0, list.splice(index, 1)[0]);
+    if (state.kind === "lora") assignLoraIds(state.model);
+    if (state.kind === "theme") assignThemeIds(state.model);
     renderBody();
+    scheduleLiveWrite();
   }
 }
 
@@ -994,16 +1106,21 @@ function onInput(event) {
     filterLoraOptions(input);
     return;
   }
-  if (input.dataset.prompt === "positive" || input.dataset.prompt === "negative") {
-    state[input.dataset.prompt] = input.value;
-    if (state.tone === "ok") setMessage("", "");
+  if (input.dataset.raw != null) {
+    state.raw = input.value;
+    scheduleLiveWrite();
     return;
   }
-  if (!state.model || !input.dataset.path) return;
+  if (input.dataset.prompt === "positive" || input.dataset.prompt === "negative") {
+    state[input.dataset.prompt] = input.value;
+    scheduleLiveWrite();
+    return;
+  }
+  if (!state.model || !input.dataset.path || input.readOnly) return;
   if (input.dataset.kind === "tags" || input.dataset.kind === "ids") setPath(state.model, input.dataset.path, splitList(input.value));
   else if (input.type === "checkbox") setPath(state.model, input.dataset.path, input.checked);
   else setPath(state.model, input.dataset.path, input.value);
-  if (state.tone === "ok") setMessage("", "");
+  scheduleLiveWrite();
 }
 
 function onChange(event) {
@@ -1013,7 +1130,17 @@ function onChange(event) {
     applyLoraPick(input);
     return;
   }
-  if (!state.model || !input.dataset.path) return;
+  if (input.dataset.raw != null) {
+    state.raw = input.value;
+    scheduleLiveWrite();
+    return;
+  }
+  if (input.dataset.prompt === "positive" || input.dataset.prompt === "negative") {
+    state[input.dataset.prompt] = input.value;
+    scheduleLiveWrite();
+    return;
+  }
+  if (!state.model || !input.dataset.path || input.readOnly) return;
   syncFromDom();
   if (input.dataset.rerender === "type") {
     const parts = input.dataset.path.split(".");
@@ -1027,6 +1154,7 @@ function onChange(event) {
     if (when && (when.op === "skipped" || when.op === "answered")) when.option_ids = [];
   }
   if (input.dataset.rerender) renderBody();
+  scheduleLiveWrite();
 }
 
 function ensureShell() {
@@ -1034,19 +1162,19 @@ function ensureShell() {
   if (rootEl) return rootEl;
   rootEl = el("div", "s1-editor");
   headerEl = el("h2", "s1-header", "No node loaded");
-  const toolbar = el("div", "s1-toolbar");
-  const apply = button("Apply to node", "apply");
-  apply.title = "Write the form onto the node widgets";
-  const reload = button("Reload from node", "reload");
-  reload.title = "Replace the form with the widget text";
-  toolbar.append(apply, reload);
   messageEl = el("p", "s1-message");
   messageEl.hidden = true;
   bodyEl = el("div", "s1-body");
-  rootEl.append(headerEl, toolbar, hint("Apply writes the node widgets. Typing alone does not."), messageEl, bodyEl);
+  rootEl.append(
+    headerEl,
+    hint("Valid edits are written to the node. Invalid fields stay in the editor and show a red outline."),
+    messageEl,
+    bodyEl,
+  );
   rootEl.addEventListener("click", onClick);
   rootEl.addEventListener("input", onInput);
   rootEl.addEventListener("change", onChange);
+  ensurePoll();
   if (!escapeBound) {
     document.addEventListener("keydown", (event) => {
       if (event.key === "Escape" && modalEl?.isConnected) closeModal();

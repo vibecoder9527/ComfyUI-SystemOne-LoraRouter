@@ -1693,6 +1693,60 @@ console.log("ok");
         )
         self.assertEqual(checked.returncode, 0, checked.stderr)
 
+    def test_editor_live_sync_and_readonly_theme_option_ids(self):
+        editors = (ROOT / "js" / "s1_editors.js").read_text(encoding="utf-8")
+        self.assertNotIn("Apply to node", editors)
+        self.assertNotIn("Reload from node", editors)
+        self.assertNotIn("fallback_option_id", editors)
+        self.assertNotIn("Typing alone does not", editors)
+        self.assertIn("function scheduleLiveWrite(", editors)
+        self.assertIn("function liveWrite(", editors)
+        self.assertIn("function pollWidgets(", editors)
+        self.assertIn("function applyInvalidMarks(", editors)
+        self.assertIn("const WRITE_DELAY_MS = 220;", editors)
+        self.assertIn("s1-invalid", editors)
+        self.assertIn("fieldPathsFromError", editors)
+        self.assertIn("assignThemeIds(state.model)", editors)
+        self.assertIn("There is no fallback option.", editors)
+        theme_start = editors.index("function renderThemes()")
+        theme_end = editors.index("function renderAction(")
+        themes = editors[theme_start:theme_end]
+        self.assertIn('readOnlyLine("theme_id"', themes)
+        self.assertNotIn('field("theme_id"', themes)
+        self.assertIn("noneField(path, theme)", themes)
+        option_start = editors.index("function renderOption(")
+        option_end = editors.index("function noneField(")
+        options = editors[option_start:option_end]
+        self.assertIn('readOnlyLine("option_id"', options)
+        self.assertNotIn('field("option_id"', options)
+        self.assertIn("Theme ${index + 1} · ${theme.theme_id}", editors)
+        self.assertIn("Option ${index + 1} · ${option.option_id}", editors)
+        none_end = editors.index("function renderThemes()")
+        none_field = editors[option_end:none_end]
+        self.assertIn('field("none_option_id"', none_field)
+        steps_start = editors.index("function renderSteps()")
+        steps_end = editors.index("function renderRaw(")
+        steps = editors[steps_start:steps_end]
+        self.assertIn('field("theme_id"', steps)
+        self.assertIn("writePromptWidgets", editors)
+        node = shutil.which("node")
+        if node is None:
+            self.skipTest("node is not installed")
+        checked = subprocess.run(
+            [node, "--check", str(ROOT / "js" / "s1_editors.js")],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(checked.returncode, 0, checked.stderr)
+        checked_model = subprocess.run(
+            [node, "--check", str(ROOT / "js" / "s1_model.js")],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(checked_model.returncode, 0, checked_model.stderr)
+
     def test_sequence_editor_puts_negative_prompt_under_positive(self):
         editors = (ROOT / "js" / "s1_editors.js").read_text(encoding="utf-8")
         positive_at = editors.index('promptField("positive"')
