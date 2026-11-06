@@ -39,6 +39,7 @@ def load_package():
 
 PKG = load_package()
 TYPES = importlib.import_module(PACKAGE_NAME + ".schema.types")
+IDS = importlib.import_module(PACKAGE_NAME + ".schema.lora_ids")
 CLIENT = importlib.import_module(PACKAGE_NAME + ".systemone.client")
 ENGINE = importlib.import_module(PACKAGE_NAME + ".sequence_engine")
 APPLY = importlib.import_module(PACKAGE_NAME + ".apply_loras")
@@ -281,6 +282,104 @@ class SchemaTests(unittest.TestCase):
         with self.assertRaises(TYPES.SchemaError) as ctx:
             TYPES.validate_refs(later, themes_ok, loras)
         self.assertIn("earlier step", str(ctx.exception))
+
+
+class LoraIdHelperTests(unittest.TestCase):
+    def test_next_lora_id_uses_smallest_free_positive_integer(self):
+        self.assertEqual(IDS.next_lora_id([]), "lora_1")
+        self.assertEqual(IDS.next_lora_id(["lora_1", "lora_2"]), "lora_3")
+        self.assertEqual(IDS.next_lora_id(["lora_1", "lora_3"]), "lora_2")
+        self.assertEqual(IDS.next_lora_id(["style_anime_v3", "char_a"]), "lora_1")
+        self.assertEqual(IDS.next_lora_id(["lora_2", "style_anime_v3"]), "lora_1")
+        self.assertEqual(IDS.next_lora_id(["lora_0", "lora_01", "Lora_1"]), "lora_1")
+        self.assertEqual(IDS.next_lora_id(["", "lora_1", None, "lora_4"]), "lora_2")
+
+    def test_ensure_lora_ids_keeps_manual_ids_and_fills_gaps(self):
+        original = [
+            {"lora_id": "", "name": "new.safetensors", "strength_model": 0.2, "strength_clip": 0.9},
+            {"lora_id": "style_anime_v3", "name": "a.safetensors", "strength_model": 0.8, "strength_clip": 0.4},
+            {"lora_id": "lora_1", "name": "b.safetensors", "strength_model": 0.5, "strength_clip": 0.5},
+            {"name": "missing.safetensors"},
+            {"lora_id": "   ", "name": "blank.safetensors"},
+        ]
+        filled = IDS.ensure_lora_ids(original)
+        self.assertEqual(
+            [entry["lora_id"] for entry in filled],
+            ["lora_2", "style_anime_v3", "lora_1", "lora_3", "lora_4"],
+        )
+        self.assertEqual(filled[1]["strength_clip"], 0.4)
+        self.assertEqual(original[0]["lora_id"], "")
+        self.assertIsNot(filled[0], original[0])
+        self.assertNotIn("lora_id", original[3])
+
+        minimal = json.loads(_read("lora_library.minimal.json"))
+        ensured = IDS.ensure_lora_ids(minimal["loras"])
+        self.assertEqual(
+            [entry["lora_id"] for entry in ensured],
+            ["style_anime_v3", "style_realistic", "char_a"],
+        )
+        parsed = TYPES.parse_lora_library(_read("lora_library.minimal.json"))
+        self.assertEqual(set(parsed.loras), {"style_anime_v3", "style_realistic", "char_a"})
+        self.assertEqual(parsed.get("style_anime_v3").strength_model, 0.8)
+        self.assertEqual(parsed.get("style_anime_v3").strength_clip, 0.8)
+
+    def test_shared_strength_writes_both_fields_and_drops_strength_key(self):
+        fields = IDS.shared_strength_fields(0.8)
+        self.assertEqual(fields, {"strength_model": 0.8, "strength_clip": 0.8})
+        self.assertEqual(IDS.shared_strength_fields(1), {"strength_model": 1, "strength_clip": 1})
+        out = IDS.apply_shared_strength(
+            {
+                "lora_id": "style_anime_v3",
+                "name": "a.safetensors",
+                "strength_model": 0.2,
+                "strength_clip": 0.9,
+                "strength": 1,
+            },
+            0.8,
+        )
+        self.assertEqual(out["lora_id"], "style_anime_v3")
+        self.assertEqual(out["strength_model"], 0.8)
+        self.assertEqual(out["strength_clip"], 0.8)
+        self.assertNotIn("strength", out)
+        self.assertEqual(
+            TYPES.parse_lora_library(
+                {"version": 1, "loras": [{"lora_id": "a", "name": "a.safetensors", **fields}]}
+            )
+            .get("a")
+            .strength_clip,
+            0.8,
+        )
+        with self.assertRaises(TypeError):
+            IDS.shared_strength_fields(True)
+        with self.assertRaises(TypeError):
+            IDS.shared_strength_fields("0.8")
+        with self.assertRaises(ValueError):
+            IDS.shared_strength_fields(float("inf"))
+
+    def test_parse_still_requires_id_and_both_strengths(self):
+        with self.assertRaises(TYPES.SchemaError):
+            TYPES.parse_lora_library(
+                {"loras": [{"name": "a.safetensors", "strength_model": 1, "strength_clip": 1}]}
+            )
+        with self.assertRaises(TYPES.SchemaError):
+            TYPES.parse_lora_library(
+                {"loras": [{"lora_id": "a", "name": "a.safetensors", "strength_model": 1}]}
+            )
+        library = TYPES.parse_lora_library(
+            {
+                "loras": [
+                    {
+                        "lora_id": "style_anime_v3",
+                        "name": "a.safetensors",
+                        "strength_model": 0.85,
+                        "strength_clip": 0.8,
+                    }
+                ]
+            }
+        )
+        entry = library.get("style_anime_v3")
+        self.assertEqual(entry.strength_model, 0.85)
+        self.assertEqual(entry.strength_clip, 0.8)
 
 
 class ClientTests(unittest.TestCase):
