@@ -1,7 +1,7 @@
 // Visual editor modal for LoRA Library, Theme Root, and Theme.
 // ComfyUI loads this module because __init__.py exports WEB_DIRECTORY = "./js".
 // The modal edits theme_json or library_json. Invalid drafts are not written.
-// Prompts are sockets. Positive is the input above negative. Prompts are not stored in theme_json.
+// Prompts are sockets. Positive is the input above negative. Negative is optional. Prompts are not stored in theme_json.
 
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
@@ -12,6 +12,7 @@ import {
   planOptionOutputs,
   planThemeIds,
   relinkOptionSlots,
+  orderThemePromptInputs,
   blankLora,
   blankOption,
   commitModel,
@@ -626,7 +627,7 @@ function renderThemeFields() {
   );
   bodyEl.append(
     hint(
-      "Positive is the input above negative. Prompts are not stored in theme_json. Wire them from prompt nodes. This editor writes theme_json only. Option order is output-slot order.",
+      "Positive is the input above negative. Negative is optional; unconnected or blank is sent as empty. Prompts are not stored in theme_json. Wire them from prompt nodes. This editor writes theme_json only. Option order is output-slot order.",
     ),
   );
   bodyEl.append(
@@ -1232,6 +1233,7 @@ function applyThemePlan(nodes) {
 // This does not call reconcileThemeIds.
 function syncOptionOutputs(node) {
   if (!isThemeNode(node)) return;
+  orderThemePromptInputs(node);
   const plan = planOptionOutputs(widgetText(findWidget(node, "theme_json")));
   if (!plan.ok || !Array.isArray(plan.slots)) return;
   relinkOptionSlots(node, plan.slots);
@@ -1320,6 +1322,7 @@ app.registerExtension({
   nodeCreated(node) {
     attachButton(node);
     if (!isThemeNode(node)) return;
+    orderThemePromptInputs(node);
     installThemeSerialize(node);
     if (configuringGraph) {
       // Saved widgets arrive in configure(), after this hook. Do not number yet.

@@ -112,6 +112,8 @@ def run_theme(
 
     if not isinstance(positive, str):
         raise SchemaError("positive must be a string")
+    if negative is None:
+        negative = ""
     if not isinstance(negative, str):
         raise SchemaError("negative must be a string")
     if role not in _ROLES:

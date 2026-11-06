@@ -3,12 +3,13 @@
 ComfyUI loads this file from ``custom_nodes/ComfyUI-SystemOne-LoraRouter``.
 
 Wire SystemOne Settings into Theme Root and into each downstream Theme.
-Positive is the prompt socket above negative. Theme Root always decides.
+Positive is the prompt socket above negative. Negative is optional;
+unconnected or blank is sent as empty. Theme Root always decides.
 Each option in ``theme_json`` is an output slot. Wire the slot you care
 about into a child Theme's ``upstream`` input, or into LoRA Aggregate.
 An unselected slot is an ExecutionBlocker, so the nodes on that wire do
-not run. Theme Collect merges two ``S1_DECISION`` payloads when sibling
-branches should apply together.
+not run. Theme Collect merges optional ``S1_DECISION`` payloads when sibling
+branches should apply together. One wired branch is returned unchanged.
 
 ``S1_SETTINGS``, ``S1_DECISION``, and ``S1_LORA_LIB`` are custom type names.
 ComfyUI matches them as strings.

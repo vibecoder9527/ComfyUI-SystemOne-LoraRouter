@@ -212,7 +212,9 @@ class DecisionPayload:
     ``result`` is the accumulated decisions and tags. Every selected slot of
     one theme carries that same result. ``slot_option_id`` is the option this
     socket represents. It is empty when Theme Collect merged two payloads.
-    ``emitted_reason`` is ``selected``, ``passthrough_error``, or ``collected``.
+    A Collect passthrough of one branch leaves the original slot id and
+    ``emitted_reason``. ``emitted_reason`` is ``selected``,
+    ``passthrough_error``, or ``collected``.
     """
 
     result: ThemeResult

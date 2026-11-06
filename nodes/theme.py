@@ -107,7 +107,7 @@ class _ThemeOutputs:
         outcome = run_theme(
             theme_json=theme_json,
             positive=positive,
-            negative=negative or "",
+            negative="" if negative is None else negative,
             settings=settings,
             upstream=upstream_result,
             role=role,
@@ -120,7 +120,8 @@ class S1ThemeRoot(_ThemeOutputs):
 
     DESCRIPTION = (
         "Root theme. It always asks SystemOne when the theme has a decision to make. "
-        "Positive is the input above negative. Both are sockets, not body text. "
+        "Positive is the input above negative. Positive is required. Negative is an "
+        "optional STRING socket; unconnected or blank is sent as empty. "
         "Settings comes from SystemOne Settings. There is no run switch, no enable_json, "
         "and no API widgets on this node. "
         "Each option in theme_json is an output slot, in that order. "
@@ -138,13 +139,6 @@ class S1ThemeRoot(_ThemeOutputs):
                     {
                         "forceInput": True,
                         "tooltip": "Positive prompt. The input above negative. Sent as state.positive.",
-                    },
-                ),
-                "negative": (
-                    "STRING",
-                    {
-                        "forceInput": True,
-                        "tooltip": "Negative prompt, below positive. Sent as state.negative. Blank is empty.",
                     },
                 ),
                 "settings": (
@@ -167,10 +161,23 @@ class S1ThemeRoot(_ThemeOutputs):
                         ),
                     },
                 ),
-            }
+            },
+            "optional": {
+                "negative": (
+                    "STRING",
+                    {
+                        "forceInput": True,
+                        "default": "",
+                        "tooltip": (
+                            "Negative prompt, below positive. Optional. "
+                            "Unconnected or blank is sent as empty state.negative."
+                        ),
+                    },
+                ),
+            },
         }
 
-    def decide(self, positive, negative, settings, theme_json):
+    def decide(self, positive, negative="", settings=None, theme_json=None):
         return self._run(positive, negative, settings, theme_json, None, "root")
 
 
@@ -181,7 +188,9 @@ class S1Theme(_ThemeOutputs):
         "Downstream theme. It runs when upstream is an S1_DECISION from a parent "
         "option slot or from Theme Collect. An ExecutionBlocker upstream does not "
         "call SystemOne and blocks every output of this node. "
-        "Positive is the input above negative. Settings comes from SystemOne Settings. "
+        "Positive is the input above negative. Positive is required. Negative is an "
+        "optional STRING socket; unconnected or blank is sent as empty. "
+        "Settings comes from SystemOne Settings. "
         "There is no run switch, no enable_json, and no API widgets. "
         "Option slots follow theme_json order. "
         "Open visual editor edits theme_json only."
@@ -196,13 +205,6 @@ class S1Theme(_ThemeOutputs):
                     {
                         "forceInput": True,
                         "tooltip": "Positive prompt. The input above negative. Not copied from the parent theme.",
-                    },
-                ),
-                "negative": (
-                    "STRING",
-                    {
-                        "forceInput": True,
-                        "tooltip": "Negative prompt, below positive. Blank is sent as empty.",
                     },
                 ),
                 "settings": (
@@ -234,10 +236,23 @@ class S1Theme(_ThemeOutputs):
                         ),
                     },
                 ),
-            }
+            },
+            "optional": {
+                "negative": (
+                    "STRING",
+                    {
+                        "forceInput": True,
+                        "default": "",
+                        "tooltip": (
+                            "Negative prompt, below positive. Optional. "
+                            "Unconnected or blank is sent as empty."
+                        ),
+                    },
+                ),
+            },
         }
 
-    def decide(self, positive, negative, settings, theme_json, upstream):
+    def decide(self, positive, negative="", settings=None, theme_json=None, upstream=None):
         if is_execution_blocker(upstream):
             return _blocked_outputs(
                 "Upstream option slot did not run. SystemOne was not called and this theme added no tags."

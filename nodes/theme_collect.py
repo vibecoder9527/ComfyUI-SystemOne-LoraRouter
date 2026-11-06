@@ -19,35 +19,44 @@ class S1ThemeCollect:
         "or LoRA Aggregate. Tags are recomputed from the kept decisions.",
     )
     DESCRIPTION = (
-        "Join two S1_DECISION payloads. Use this when two option branches should "
-        "apply together. Order is the first copy of each theme_id: all of a, then "
-        "new ids from b. The same decision for a theme_id already kept is dropped, "
-        "so a shared ancestor is stored once. A different decision for that id "
-        "raises SchemaError. "
-        "ComfyUI does not run this node when either input is an ExecutionBlocker. "
-        "Both branches have to emit a payload. Chain this node to merge more than two."
+        "Join two optional S1_DECISION payloads. Use this when two option branches "
+        "should apply together. a and b are both optional. One wired branch is "
+        "returned unchanged. An ExecutionBlocker or missing optional input is "
+        "ignored so a selected sibling can stay linked and this node can run. "
+        "Zero usable inputs raises SchemaError. "
+        "Order is the first copy of each theme_id: all of a, then new ids from b. "
+        "The same decision for a theme_id already kept is dropped, so a shared "
+        "ancestor is stored once. A different decision for that id raises SchemaError. "
+        "Chain this node to merge more than two."
     )
 
     @classmethod
     def INPUT_TYPES(cls):
         return {
-            "required": {
+            "required": {},
+            "optional": {
                 "a": (
                     "S1_DECISION",
                     {
                         "forceInput": True,
-                        "tooltip": "First decision. Its decisions stay first.",
+                        "tooltip": (
+                            "First decision. Optional. Its decisions stay first. "
+                            "Unconnected or blocked is ignored."
+                        ),
                     },
                 ),
                 "b": (
                     "S1_DECISION",
                     {
                         "forceInput": True,
-                        "tooltip": "Second decision. New theme ids are appended after a.",
+                        "tooltip": (
+                            "Second decision. Optional. New theme ids are appended after a. "
+                            "Unconnected or blocked is ignored."
+                        ),
                     },
                 ),
-            }
+            },
         }
 
-    def merge(self, a, b):
+    def merge(self, a=None, b=None):
         return (collect_decisions(a, b),)

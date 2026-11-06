@@ -537,7 +537,7 @@ def _convert_theme(node, option_index, theme_ids, settings_of):
         theme_inputs["positive"] = inputs.get("positive", "")
     if "negative" in inputs:
         theme_inputs["negative"] = inputs.get("negative", "")
-    # Positive is recorded before negative. Both are sockets in the new graph.
+    # Positive is recorded before negative. Positive is required. Negative is optional.
     if "positive" not in theme_inputs:
         theme_inputs = {"positive": "", **theme_inputs}
     if "negative" not in theme_inputs:

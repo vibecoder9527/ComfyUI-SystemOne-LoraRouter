@@ -53,6 +53,7 @@ import {
   planThemeIds,
   optionOutputName,
   relinkOptionSlots,
+  orderThemePromptInputs,
   MAX_OPTION_OUTPUTS,
 } from "./js/s1_model.js";
 
@@ -410,6 +411,66 @@ const drop = relinkOptionSlots(dropped, planned.slots);
 assert(drop.dropped === 1, "missing option drops the wire");
 assert(dropped.graph.links[9] === undefined, "link removed");
 assert(dropped.graph._nodes[0].inputs[3].link === null, "target input cleared");
+
+const sibling = {
+  id: 11,
+  outputs: [
+    { name: "Anime (anime)", type: "S1_DECISION", links: [21], s1OptionId: "anime" },
+    { name: "none", type: "S1_DECISION", links: [], s1OptionId: "none" },
+  ],
+  graph: {
+    links: {
+      21: { id: 21, origin_id: 11, origin_slot: 0, target_id: 12, target_slot: 0, type: "S1_DECISION" },
+    },
+  },
+};
+const siblingSync = relinkOptionSlots(sibling, planned.slots);
+assert(siblingSync.dropped === 0, "hiding pad siblings does not drop a live option wire");
+assert(sibling.graph.links[21].origin_slot === 0, "selected slot stays linked");
+assert(sibling.outputs[0].hidden === false && sibling.outputs[0].links.includes(21), "live option stays visible");
+assert(sibling.outputs[2].hidden === true, "unused pad is hidden");
+
+const livePad = {
+  id: 13,
+  outputs: Array.from({ length: 33 }, (_, index) => ({
+    name: index === 32 ? "report_json" : `option_${index + 1}`,
+    type: index === 32 ? "STRING" : "S1_DECISION",
+    links: index === 5 ? [22] : [],
+    s1OptionId: index === 0 ? "anime" : index === 1 ? "none" : "",
+  })),
+  graph: {
+    links: {
+      22: { id: 22, origin_id: 13, origin_slot: 5, target_id: 14, target_slot: 1, type: "S1_DECISION" },
+    },
+  },
+};
+relinkOptionSlots(livePad, planned.slots);
+assert(livePad.outputs[5].hidden === false, "a pad with a live wire is not hidden");
+assert(livePad.graph.links[22].origin_slot === 5, "live pad wire is kept");
+assert(livePad.outputs[5].links.includes(22), "live pad link id stays on the output");
+
+const prompts = {
+  inputs: [
+    { name: "positive", link: 1 },
+    { name: "settings", link: 2 },
+    { name: "negative", link: 3 },
+  ],
+  graph: {
+    links: {
+      1: { id: 1, target_slot: 0 },
+      2: { id: 2, target_slot: 1 },
+      3: { id: 3, target_slot: 2 },
+    },
+  },
+};
+const ordered = orderThemePromptInputs(prompts);
+assert(ordered.moved === true, "optional negative is moved under positive");
+assert(prompts.inputs.map((item) => item.name).join(",") === "positive,negative,settings", "prompt order");
+assert(prompts.graph.links[1].target_slot === 0, "positive link stays");
+assert(prompts.graph.links[3].target_slot === 1, "negative link follows the socket");
+assert(prompts.graph.links[2].target_slot === 2, "settings link remapped");
+const againOrder = orderThemePromptInputs(prompts);
+assert(againOrder.moved === false, "second prompt order pass is a no-op");
 console.log("ok");
 """
 
@@ -491,34 +552,41 @@ class NodeTests(unittest.TestCase):
             self.assertEqual(node.RETURN_TYPES, slot_types)
             self.assertEqual(node.RETURN_NAMES, slot_names)
             inputs = node.INPUT_TYPES()
-            self.assertNotIn("optional", inputs)
             required = inputs["required"]
-            self.assertLess(list(required).index("positive"), list(required).index("negative"))
+            optional = inputs["optional"]
+            self.assertIn("positive", required)
+            self.assertNotIn("negative", required)
+            self.assertIn("negative", optional)
             self.assertTrue(required["positive"][1]["forceInput"])
-            self.assertTrue(required["negative"][1]["forceInput"])
+            self.assertTrue(optional["negative"][1]["forceInput"])
+            self.assertEqual(optional["negative"][1].get("default"), "")
             self.assertEqual(required["settings"][0], "S1_SETTINGS")
             self.assertTrue(required["settings"][1]["forceInput"])
             self.assertFalse(required["theme_json"][1]["dynamicPrompts"])
             self.assertEqual(required["theme_json"][1]["default"], TYPES.EMPTY_THEME_JSON)
             for banned in ("run", "enable_json", "api_key", "api_model", "endpoint", "on_error"):
                 self.assertNotIn(banned, required)
+                self.assertNotIn(banned, optional)
             self.assertIn("visual editor", node.DESCRIPTION.lower())
             self.assertIn("Positive is the input above negative", node.DESCRIPTION)
+            self.assertIn("optional", node.DESCRIPTION.lower())
         self.assertEqual(
             list(root.INPUT_TYPES()["required"]),
-            ["positive", "negative", "settings", "theme_json"],
+            ["positive", "settings", "theme_json"],
         )
+        self.assertEqual(list(root.INPUT_TYPES()["optional"]), ["negative"])
         self.assertEqual(
             list(theme.INPUT_TYPES()["required"]),
-            ["positive", "negative", "settings", "upstream", "theme_json"],
+            ["positive", "settings", "upstream", "theme_json"],
         )
+        self.assertEqual(list(theme.INPUT_TYPES()["optional"]), ["negative"])
         self.assertEqual(theme.INPUT_TYPES()["required"]["upstream"][0], "S1_DECISION")
         self.assertIn("ExecutionBlocker", theme.DESCRIPTION)
         self.assertNotIn("when_upstream", theme.DESCRIPTION)
         signature = inspect.signature(root.decide)
         params = list(signature.parameters)
         self.assertEqual(params[params.index("positive") + 1], "negative")
-        self.assertIs(signature.parameters["negative"].default, inspect.Parameter.empty)
+        self.assertEqual(signature.parameters["negative"].default, "")
 
         settings = mappings["S1Settings"]
         self.assertEqual(settings.RETURN_TYPES, ("S1_SETTINGS",))
@@ -557,10 +625,14 @@ class NodeTests(unittest.TestCase):
         self.assertEqual(collect.FUNCTION, "merge")
         self.assertEqual(collect.RETURN_TYPES, ("S1_DECISION",))
         self.assertEqual(collect.RETURN_NAMES, ("decision",))
-        self.assertEqual(list(collect.INPUT_TYPES()["required"]), ["a", "b"])
-        self.assertEqual(collect.INPUT_TYPES()["required"]["a"][0], "S1_DECISION")
-        self.assertTrue(collect.INPUT_TYPES()["required"]["a"][1]["forceInput"])
+        self.assertEqual(list(collect.INPUT_TYPES()["required"]), [])
+        self.assertEqual(list(collect.INPUT_TYPES()["optional"]), ["a", "b"])
+        self.assertEqual(collect.INPUT_TYPES()["optional"]["a"][0], "S1_DECISION")
+        self.assertTrue(collect.INPUT_TYPES()["optional"]["a"][1]["forceInput"])
+        self.assertTrue(collect.INPUT_TYPES()["optional"]["b"][1]["forceInput"])
         self.assertIn("ExecutionBlocker", collect.DESCRIPTION)
+        self.assertIn("optional", collect.DESCRIPTION.lower())
+        self.assertIn("SchemaError", collect.DESCRIPTION)
 
         aggregate = mappings["S1LoraAggregate"]
         self.assertEqual(aggregate.FUNCTION, "apply")
@@ -677,6 +749,27 @@ class NodeTests(unittest.TestCase):
         )
         (merged,) = collect.merge(left[0], right[0])
         self.assertEqual([item.theme_id for item in merged.result.decisions], ["left", "right"])
+
+        omitted = root.decide(
+            positive="p",
+            settings=settings,
+            theme_json=json.dumps(theme_doc(theme_id="omit_neg", options=[option("a", ["ta"])])),
+        )
+        self.assertEqual(omitted[0].slot_option_id, "a")
+        self.assertEqual(omitted[0].result.tags, ["ta"])
+        (only_a,) = collect.merge(art[0])
+        self.assertIs(only_a, art[0])
+        (only_b,) = collect.merge(b=pack[0])
+        self.assertIs(only_b, pack[0])
+        (blocked_ignored,) = collect.merge(art[0], realistic)
+        self.assertIs(blocked_ignored, art[0])
+        (blocked_first,) = collect.merge(realistic, pack[0])
+        self.assertIs(blocked_first, pack[0])
+        with self.assertRaises(TYPES.SchemaError) as collect_empty:
+            collect.merge()
+        self.assertIn("a or b", str(collect_empty.exception))
+        with self.assertRaises(TYPES.SchemaError):
+            collect.merge(realistic, art[3])
 
         with mock.patch("urllib.request.urlopen") as empty_call:
             empty = root.decide(
@@ -1038,6 +1131,8 @@ class NodeTests(unittest.TestCase):
         self.assertIn("export function planThemeIds", model_js)
         self.assertIn("export function planOptionOutputs", model_js)
         self.assertIn("export function relinkOptionSlots", model_js)
+        self.assertIn("export function orderThemePromptInputs", model_js)
+        self.assertIn("orderThemePromptInputs", editors)
         self.assertNotIn("export function assignThemeIds", model_js)
         self.assertIn("planThemeIds", editors)
         self.assertIn("planOptionOutputs", editors)

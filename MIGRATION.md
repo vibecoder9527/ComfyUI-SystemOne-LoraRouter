@@ -1,17 +1,17 @@
 # Migration
 
-Positive is the input above negative. This break removes `run`, `enable_json`, `theme_result`, and `S1_THEME_RESULT`. API widgets move to **SystemOne Settings** (`S1Settings`). Theme Root (`S1ThemeRoot`) always decides. A downstream Theme (`S1Theme`) takes one parent option slot on `upstream`. Outputs are `S1_DECISION` option slots, not one `theme_result`.
+Positive is the input above negative. Positive is required. Negative is optional; unconnected or blank is sent as empty. This break removes `run`, `enable_json`, `theme_result`, and `S1_THEME_RESULT`. API widgets move to **SystemOne Settings** (`S1Settings`). Theme Root (`S1ThemeRoot`) always decides. A downstream Theme (`S1Theme`) takes one parent option slot on `upstream`. Outputs are `S1_DECISION` option slots, not one `theme_result`.
 
 `schema/migrate.py` rewrites JSON. It does not register nodes and it does not call SystemOne.
 
-`S1ThemeCollect` stays. It now merges two `S1_DECISION` payloads. It is not removed. Option-slot branching replaces enable trees. Collect is only the fan-in, and only when both inputs actually emit. An `ExecutionBlocker` on either input makes ComfyUI skip Collect, so Collect cannot OR two slots.
+`S1ThemeCollect` stays. It now merges two `S1_DECISION` payloads. It is not removed. Option-slot branching replaces enable trees. Collect is the fan-in. `a` and `b` are both optional. One wired branch is returned unchanged. An `ExecutionBlocker` or missing optional input is ignored. Zero usable inputs raises `SchemaError`.
 
 ## What a 51f1904 workflow loses
 
 | Removed | Replacement |
 | --- | --- |
 | Theme `api_key`, `api_model`, `endpoint`, `noul_threshold`, `on_error`, `min_confidence` | One `S1Settings` node, wired into `settings` |
-| `positive` / `negative` widgets | `STRING` sockets. Positive is the input above negative. Not stored in `theme_json` |
+| `positive` / `negative` widgets | `STRING` sockets. Positive is required and is the input above negative. Negative is optional. Not stored in `theme_json` |
 | `run=enabled` | `S1ThemeRoot`. It always decides. Leftover `enable_json` clauses are ignored |
 | `run=when_upstream` plus `enable_json` | `S1Theme` plus one wire from the parent option slot into `upstream` |
 | `run=disabled` | The node is dropped. Nothing is left on the canvas for it |
@@ -103,8 +103,8 @@ Library migration rules are unchanged: bindings become tags when the option had 
 ## Checks after you rewire
 
 - Settings is connected to every Theme Root and Theme that should call SystemOne.
-- Positive is the input above negative on each theme. Prompts are not inside `theme_json`.
+- Positive is the input above negative on each theme. Positive is required. Negative is optional. Prompts are not inside `theme_json`.
 - The child Theme's `upstream` comes from the parent option slot, not from output 0 of an old theme and not from `report_json` (index 32).
-- Aggregate's `decision` comes from a slot you expect to emit, or from Theme Collect of two emitting branches.
+- Aggregate's `decision` comes from a slot you expect to emit, or from Theme Collect of one or two branches.
 - You did not leave a second copy of the API widgets on the theme.
 - A theme id is unique along any chain you will queue. `none_option_id` is still an option of that theme when you set it.

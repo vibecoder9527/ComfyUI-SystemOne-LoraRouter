@@ -602,6 +602,13 @@ function ensureOutput(outputs, index, type) {
   return outputs[index];
 }
 
+function outputHasLinks(output) {
+  if (!output) return false;
+  if (Array.isArray(output.links) && output.links.length) return true;
+  if (output.links != null && output.links !== false && !Array.isArray(output.links)) return true;
+  return false;
+}
+
 /**
  * Rename option sockets and retarget wires by option id.
  *
@@ -609,6 +616,8 @@ function ensureOutput(outputs, index, type) {
  * move links. A later sync moves graph.links origin_slot to the option's new
  * index and drops a link whose option disappeared. Links on the report socket
  * (index 32) stay put. A report_json name alone does not count as a prior sync.
+ * A live wire is not dropped because a sibling slot is hidden, and a socket
+ * that still has links is not marked hidden.
  */
 export function relinkOptionSlots(node, slots) {
   if (!node || !Array.isArray(slots) || slots.length < MAX_OPTION_OUTPUTS) {
@@ -629,7 +638,9 @@ export function relinkOptionSlots(node, slots) {
   if (!first && node.graph) {
     const nextIndex = new Map();
     slots.forEach((slot, index) => {
-      if (slot?.option_id && !slot.hidden) nextIndex.set(String(slot.option_id), index);
+      // Keep a mapping even when the planned slot is hidden so a live wire on
+      // that option id is retargeted instead of dropped.
+      if (slot?.option_id) nextIndex.set(String(slot.option_id), index);
     });
     const pending = [];
     eachGraphLink(node.graph, (link, key, kind) => {
@@ -667,10 +678,11 @@ export function relinkOptionSlots(node, slots) {
   for (let index = 0; index < MAX_OPTION_OUTPUTS; index += 1) {
     const slot = slots[index];
     const output = ensureOutput(outputs, index, DECISION_TYPE);
-    output.name = slot.hidden ? "" : slot.name;
+    const live = outputHasLinks(output);
+    output.name = slot.hidden && !live ? "" : slot.name || output.name || "";
     output.label = output.name;
     output.type = DECISION_TYPE;
-    output.hidden = Boolean(slot.hidden);
+    output.hidden = Boolean(slot.hidden) && !live;
     output.s1OptionId = slot.option_id || "";
   }
   const report = ensureOutput(outputs, REPORT_OUTPUT_INDEX, "STRING");
@@ -678,6 +690,41 @@ export function relinkOptionSlots(node, slots) {
   if (!report.type || report.type === DECISION_TYPE) report.type = "STRING";
   report.hidden = false;
   return { ok: true, first, moved, dropped };
+}
+
+/**
+ * Keep the negative socket immediately under positive.
+ *
+ * ComfyUI lists every required input before optional ones, so an optional
+ * negative would otherwise sit under settings. Moving the input object keeps
+ * prompt order without making negative required. Existing links are remapped
+ * to the new target_slot.
+ */
+export function orderThemePromptInputs(node) {
+  if (!node || !Array.isArray(node.inputs)) {
+    return { ok: false, moved: false };
+  }
+  const inputs = node.inputs;
+  const pos = inputs.findIndex((item) => item && item.name === "positive");
+  const neg = inputs.findIndex((item) => item && item.name === "negative");
+  if (pos < 0 || neg < 0 || neg === pos + 1) {
+    return { ok: pos >= 0 && (neg < 0 || neg === pos + 1), moved: false };
+  }
+  const [negative] = inputs.splice(neg, 1);
+  const insertAt = inputs.findIndex((item) => item && item.name === "positive") + 1;
+  inputs.splice(insertAt, 0, negative);
+  if (node.graph) {
+    inputs.forEach((input, index) => {
+      const linkId = input?.link;
+      if (linkId == null) return;
+      const links = node.graph.links;
+      const link = Array.isArray(links) ? links[linkId] : links?.[linkId];
+      if (!link) return;
+      if (Array.isArray(link)) link[4] = index;
+      else link.target_slot = index;
+    });
+  }
+  return { ok: true, moved: true };
 }
 
 export function fieldPathsFromError(message) {

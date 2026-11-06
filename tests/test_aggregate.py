@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import importlib
 import unittest
 
 from tests.harness import (
     AGG,
     APPLY,
+    PACKAGE_NAME,
     TYPES,
     CountingClient,
     FixedChoiceClient,
@@ -18,6 +20,8 @@ from tests.harness import (
     run_theme,
     theme_doc,
 )
+
+BLOCKER = importlib.import_module(PACKAGE_NAME + ".schema.blocker")
 
 
 def _chain(choice="anime", scores=None):
@@ -251,6 +255,32 @@ class AggregateTests(unittest.TestCase):
         )
         with self.assertRaises(TYPES.SchemaError):
             AGG.collect_theme_results(base, other_raw)
+
+    def test_collect_passthrough_ignores_blocker_and_requires_one_payload(self):
+        left = run_theme(
+            theme_json=theme_doc(theme_id="left", options=[option("a", ["ta"])]),
+            client=CountingClient(),
+        ).result
+        right = run_theme(
+            theme_json=theme_doc(theme_id="right", options=[option("b", ["tb"])]),
+            client=CountingClient(),
+        ).result
+        payload_a = as_payload(left, slot_option_id="a")
+        payload_b = as_payload(right, slot_option_id="b")
+        self.assertIs(AGG.collect_decisions(payload_a, None), payload_a)
+        self.assertIs(AGG.collect_decisions(None, payload_b), payload_b)
+        self.assertIs(AGG.collect_decisions(payload_a, BLOCKER.execution_blocker(None)), payload_a)
+        self.assertIs(AGG.collect_decisions(BLOCKER.execution_blocker("skip"), payload_b), payload_b)
+        merged = AGG.collect_decisions(payload_a, payload_b)
+        self.assertEqual(merged.emitted_reason, "collected")
+        self.assertEqual([item.theme_id for item in merged.result.decisions], ["left", "right"])
+        with self.assertRaises(TYPES.SchemaError) as empty:
+            AGG.collect_decisions(None, None)
+        self.assertIn("a or b", str(empty.exception))
+        with self.assertRaises(TYPES.SchemaError):
+            AGG.collect_decisions(BLOCKER.execution_blocker(None), BLOCKER.execution_blocker(None))
+        with self.assertRaises(TYPES.SchemaError):
+            AGG.collect_decisions(payload_a, object())
 
     def test_theme_errors_do_not_cancel_kept_tags(self):
         upstream = run_theme(

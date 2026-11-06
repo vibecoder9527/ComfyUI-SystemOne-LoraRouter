@@ -2,7 +2,7 @@
 
 ComfyUI custom nodes that ask SystemOne which theme options fit a prompt, turn the selected options into tags, and apply each matching LoRA once.
 
-Positive is the input above negative. Prompts are sockets, not text stored on the theme.
+Positive is the input above negative. Positive is required. Negative is optional; unconnected or blank is sent as empty. Prompts are sockets, not text stored on the theme.
 
 The contract is [SPEC.md](SPEC.md). Moving a 51f1904 workflow, or an older theme library or sequence, is [MIGRATION.md](MIGRATION.md).
 
@@ -42,7 +42,7 @@ The nodes show up under **SystemOne → LoraRouter**:
 
 1. Add **SystemOne Settings**. Put the API key there, or leave it blank and export `SYSTEM_ONE_API_KEY`. A non-empty widget wins. The default endpoint is `https://system-one.dev/v1/systemone`. A blank `api_model` is sent as `unspecified`.
 2. Add a **LoRA Library**. Paste `examples/lora_library.minimal.json`, or start from `examples/lora_library.empty.json` and use **Open visual editor**.
-3. Add **Theme Root**. Paste `examples/theme.art_style.json` into `theme_json`. Wire Settings into `settings`. Wire a positive prompt into `positive` and a negative prompt into `negative`. Positive is the input above negative. Theme Root always decides. There is no `run` switch.
+3. Add **Theme Root**. Paste `examples/theme.art_style.json` into `theme_json`. Wire Settings into `settings`. Wire a positive prompt into `positive`. Negative is optional; leave it unconnected or blank to send an empty negative. Positive is the input above negative. Theme Root always decides. There is no `run` switch.
 4. Add **Theme**. Paste `examples/theme.character_pack.json`. Wire the same Settings node, and wire this theme's own prompts. Wire the root's **anime** option slot into this node's `upstream` input. That wire is what used to be `enable_json`.
 5. Add **LoRA Aggregate**. Connect `MODEL`, the LoRA Library, and a selected option slot from the child Theme (or Theme Collect) into `decision`. Connect `CLIP` only when you want CLIP patched. With no clip input, the CLIP output is `None`.
 
@@ -59,7 +59,7 @@ root anime slot ──► Theme A ──► Theme Collect ──► LoRA Aggrega
               └──► Theme B ──┘
 ```
 
-Collect keeps the first copy of each `theme_id`. The same decision is stored once. A different decision for that id raises `SchemaError`. ComfyUI skips Collect when either input is an `ExecutionBlocker`, so Collect cannot OR two slots. Chain Collect to merge more than two payloads that all emitted.
+Collect keeps the first copy of each `theme_id`. The same decision is stored once. A different decision for that id raises `SchemaError`. `a` and `b` are both optional. One wired branch is returned unchanged. An `ExecutionBlocker` or missing optional input is ignored so a selected option slot can stay linked and Collect can run. Zero usable inputs raises `SchemaError`. Chain Collect to merge more than two payloads.
 
 `on_error=passthrough` on Settings records an API or choice failure, adds no tags from that theme, and still emits the accumulated payload on every real option slot so a wired Aggregate can keep upstream tags. `on_error=raise` stops the graph. Invalid `theme_json` is not that path: it raises `SchemaError`, and the graph stops. Aggregate's own `on_error` applies to weight loading only.
 
@@ -88,7 +88,7 @@ Valid edits reach `theme_json` or `library_json` after about 220ms. Invalid fiel
 
 `lora_id`, `theme_id`, and `option_id` are read-only in the form. Adding or duplicating a Theme or Theme Root writes the next free `theme_N` into `theme_json` before the prompt is queued, including when this modal stays closed. A saved non-empty id that is unique on the loaded graph stays, including a manual id such as `art_style`. If a loaded workflow has two theme nodes with the same non-empty `theme_id`, both documents are left as saved and the node title notes a theme_id conflict. A decision chain still rejects a repeated theme_id. One strength control writes `strength_model` and `strength_clip`. The LoRA name can be picked from the ComfyUI loras list or typed.
 
-After a valid theme write, and again when a graph is configured, the editor renames option sockets to `label (option_id)` and hides the unused ones. The first sync stamps ids by index and does not move wires. A later sync moves wires by `option_id` and drops a wire whose option disappeared. `report_json` stays at index 32.
+After a valid theme write, and again when a graph is configured, the editor renames option sockets to `label (option_id)` and hides the unused ones. A live wire is not dropped because a sibling slot is hidden, and a socket that still has links is not marked hidden. The first sync stamps ids by index and does not move wires. A later sync moves wires by `option_id` and drops a wire whose option disappeared. `report_json` stays at index 32.
 
 Restart ComfyUI after installing so it loads `js/`.
 
@@ -112,7 +112,7 @@ Unittest discovers `tests/test_*.py`. It does not call SystemOne and does not ne
 - The first editor sync does not move existing wires. A saved link that used to be `theme_result` on output 0 is treated as option 0 until you retarget it. `migrate_router_graph` warns instead of guessing.
 - `on_error=passthrough` emits on every real option slot, so children of those slots run. That is wider than the old enable-rule skip.
 - A multi theme with zero selections, and a theme with zero options, do not emit upstream tags on a slot.
-- Theme Collect does not run when either input is blocked, so it cannot OR two option slots.
+- Theme Collect ignores a blocked or missing optional input and keeps the other decision. Two real payloads still merge, and a conflict still raises. Zero usable inputs raises `SchemaError`. ComfyUI may still skip a node when a *required* input is an `ExecutionBlocker`; Collect's inputs are optional so a selected sibling can execute.
 - Modal sync polls about every 500ms while the modal is visible. It does not hook widget changes. Theme ids and option labels are still written before queue without opening the modal.
 - Numbering runs in the browser on each loaded graph, including each nested `node.subgraph` as its own id space. A workflow that is not loaded is unchanged.
 - A restored duplicate `theme_id` is reported and not rewritten. Queueing those nodes in one result still raises `SchemaError`.

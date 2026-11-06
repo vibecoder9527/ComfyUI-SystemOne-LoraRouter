@@ -1,6 +1,6 @@
 # SystemOne LoRA Router
 
-This file is the contract for the custom node. Positive is the input above negative. Prompts are input sockets. They are not fields of `theme_json`.
+This file is the contract for the custom node. Positive is the input above negative. Positive is required. Negative is optional; unconnected or blank is sent as empty. Prompts are input sockets. They are not fields of `theme_json`.
 
 | Class | Display name | Output |
 | --- | --- | --- |
@@ -52,14 +52,14 @@ LoRA Aggregate has its own `on_error`. That one is weight loading, not the theme
 
 Theme Root, in order:
 
-1. `positive` (`STRING`, `forceInput`)
-2. `negative` (`STRING`, `forceInput`, the socket under positive)
+1. `positive` (`STRING`, `forceInput`, required)
+2. `negative` (`STRING`, `forceInput`, optional, the socket under positive)
 3. `settings` (`S1_SETTINGS`, `forceInput`)
 4. `theme_json`
 
-Theme adds `upstream` (`S1_DECISION`, `forceInput`) before `theme_json`.
+Theme adds `upstream` (`S1_DECISION`, `forceInput`) before `theme_json`. Negative stays optional on Theme as well.
 
-Positive is the input above negative. Each theme has its own prompts. They are not copied from the parent. The request state is `{ "positive": <positive>, "negative": <negative> }`. A blank negative is `""`. Prompts are not stored in `theme_json`.
+Positive is the input above negative. Positive is required. Negative is optional; unconnected or blank is sent as `""`. Each theme has its own prompts. They are not copied from the parent. The request state is `{ "positive": <positive>, "negative": <negative> }`. Prompts are not stored in `theme_json`.
 
 There is no `run` widget. There is no `enable_json` widget.
 
@@ -138,11 +138,11 @@ One theme object. A `{ "themes": [...] }` library is rejected.
 
 ## Theme Collect
 
-Inputs `a` and `b` are `S1_DECISION`. The output is one `S1_DECISION` named `decision`, with `emitted_reason=collected`. Order is the first copy of each `theme_id`: every decision from `a`, then decisions from `b` whose id is not already kept. An identical later decision is dropped, so a shared ancestor is stored once and its tags are not doubled. Identical means status, enabled, selected ids, tags, select mode, option tag contributions, error, reason, and `raw` all match. A difference raises `SchemaError`.
+Inputs `a` and `b` are optional `S1_DECISION` sockets. The output is one `S1_DECISION` named `decision`. One wired branch is returned unchanged (`emitted_reason` stays whatever that slot emitted). Two real payloads merge with `emitted_reason=collected`. An `ExecutionBlocker` or missing optional input is ignored so a selected sibling can stay linked and Collect can run. Zero usable inputs raises `SchemaError`. Order is the first copy of each `theme_id`: every decision from `a`, then decisions from `b` whose id is not already kept. An identical later decision is dropped, so a shared ancestor is stored once and its tags are not doubled. Identical means status, enabled, selected ids, tags, select mode, option tag contributions, error, reason, and `raw` all match. A difference raises `SchemaError`.
 
 Collect has no `on_error`. It does not have 32 option slots.
 
-ComfyUI does not run Collect when either input is an `ExecutionBlocker`. Both branches have to emit. Collect cannot OR two option slots. Chain Collect nodes to merge more than two payloads.
+Chain Collect nodes to merge more than two payloads.
 
 ## LoRA library
 
@@ -196,7 +196,7 @@ The modal edits `library_json` or `theme_json`. Valid edits are written after ab
 
 `lora_id`, `theme_id`, and `option_id` are read-only. One strength field is labeled `strength (model & clip)`. Positive is the input above negative on the nodes, not in this modal. The LoRA name field can pick a file from the ComfyUI loras list. A typed name that is not in the list is still stored.
 
-`planOptionOutputs` builds 32 slots from `theme_json`. Visible slots are named `label (option_id)`, or the id when the label is blank. Hidden slots have an empty name and type `S1_DECISION`. `syncOptionOutputs` runs after a successful theme write and after `reconcileThemeIds`. It does not call reconcile back. The first sync, when no output has `s1OptionId`, stamps ids by index and does not move links. A `report_json` name alone does not count as a prior sync. A later sync moves `graph.links` `origin_slot` to the option's new index and drops a link whose option id disappeared. Report links at index 32 stay put.
+`planOptionOutputs` builds 32 slots from `theme_json`. Visible slots are named `label (option_id)`, or the id when the label is blank. Hidden slots have an empty name and type `S1_DECISION`. `syncOptionOutputs` runs after a successful theme write and after `reconcileThemeIds`. It does not call reconcile back. The first sync, when no output has `s1OptionId`, stamps ids by index and does not move links. A `report_json` name alone does not count as a prior sync. A later sync moves `graph.links` `origin_slot` to the option's new index and drops a link whose option id disappeared. A live wire is not dropped because a sibling slot is hidden, and a socket that still has links is not marked `output.hidden`. Report links at index 32 stay put. `orderThemePromptInputs` keeps the negative socket immediately under positive after ComfyUI lists optional inputs last.
 
 ## Migration
 
@@ -209,7 +209,7 @@ The modal edits `library_json` or `theme_json`. Valid edits are written after ab
 - The first option-slot sync does not retarget a legacy `theme_result` link. Output 0 of a 51f1904 theme was the whole result, not option 0.
 - `on_error=passthrough` emits on every option slot.
 - A multi theme that selects nothing does not emit upstream tags. A theme with no options does not either.
-- Theme Collect cannot merge a blocked input, because ComfyUI skips the node. It cannot replace an OR across option slots.
+- Theme Collect ignores a blocked or missing optional input and keeps the other decision. Two real payloads still merge. Zero usable inputs raises `SchemaError`.
 - The modal polls while it is visible. It does not subscribe to widget changes.
 - Restored duplicate theme ids are reported and left unchanged.
 - Tag match is exact any-overlap.

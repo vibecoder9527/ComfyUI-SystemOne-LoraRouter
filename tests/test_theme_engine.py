@@ -90,6 +90,14 @@ class ThemeEngineTests(unittest.TestCase):
         self.assertEqual(root.result.decisions[0].selected, ["anime"])
         self.assertEqual(root.result.tags, ["style_anime"])
         self.assertEqual(root_client.calls[0][0], {"positive": "anime girl", "negative": "blurry"})
+        omitted_client = FixedChoiceClient("anime")
+        omitted = run_theme(
+            theme_json=read_example(ART),
+            positive="anime girl",
+            negative=None,
+            client=omitted_client,
+        )
+        self.assertEqual(omitted_client.calls[0][0], {"positive": "anime girl", "negative": ""})
         self.assertEqual(root_client.calls[0][1]["art_style"]["type"], "choice")
         self.assertNotIn("sekret-token-xyz", ENGINE.dump_report(root.report))
         slots = _slots(root, read_example(ART))
