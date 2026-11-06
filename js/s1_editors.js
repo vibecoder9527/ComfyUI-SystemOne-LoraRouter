@@ -2,6 +2,7 @@
 // ComfyUI loads this module because __init__.py exports WEB_DIRECTORY = "./js".
 
 import { app } from "../../scripts/app.js";
+import { api } from "../../scripts/api.js";
 import {
   ACTION_TYPES,
   SELECT_MODES,
@@ -14,6 +15,8 @@ import {
   blankStep,
   blankTheme,
   commitModel,
+  loraNamesFromInfo,
+  loraNamesFromModels,
   parseEditorDocument,
   splitList,
 } from "./s1_model.js";
@@ -100,6 +103,8 @@ const CSS = `
 .s1-editor .s1-check { flex-direction: row; align-items: center; gap: 6px; }
 .s1-editor .s1-check input { width: auto; }
 .s1-editor .s1-row { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.s1-editor .s1-lora-picker { display: flex; flex-direction: column; gap: 4px; }
+.s1-editor select.s1-lora-list { min-height: 7em; }
 .s1-editor .s1-card {
   border: 1px solid color-mix(in srgb, currentColor 22%, transparent);
   border-radius: 6px;
@@ -153,6 +158,9 @@ const CSS = `
 .s1-editor-modal-host { flex: 1; min-height: 0; overflow: auto; }
 `;
 
+const EMPTY_LORA_HINT =
+  "No LoRA files listed. Needs a running ComfyUI. The list is empty when ComfyUI is offline or models/loras has no files. Typed names still work.";
+
 const state = {
   node: null,
   kind: null,
@@ -161,7 +169,11 @@ const state = {
   raw: "",
   message: "",
   tone: "",
+  openLoraBrowse: "",
 };
+
+let loraCatalog = { status: "idle", names: [], note: "" };
+let loraCatalogToken = 0;
 
 let rootEl = null;
 let headerEl = null;
@@ -328,14 +340,197 @@ function headerText() {
   return `${spec?.title || state.kind} — ${title} (#${id})`;
 }
 
+async function readJson(route) {
+  if (!api || typeof api.fetchApi !== "function") {
+    throw new Error("ComfyUI api.fetchApi is missing");
+  }
+  const response = await api.fetchApi(route, { cache: "no-store" });
+  if (!response || !response.ok) {
+    throw new Error(`${route} returned ${response ? response.status : "no response"}`);
+  }
+  return response.json();
+}
+
+async function fetchLoraNames() {
+  if (api && typeof api.getNodeDefs === "function") {
+    try {
+      const names = loraNamesFromInfo(await api.getNodeDefs());
+      if (names) return { names, note: "" };
+    } catch (exc) {
+      console.warn("[S1 Editors] getNodeDefs failed", exc);
+    }
+  }
+  for (const route of ["/object_info/LoraLoader", "/object_info/LoraLoaderModelOnly", "/object_info"]) {
+    try {
+      const names = loraNamesFromInfo(await readJson(route));
+      if (names) return { names, note: "" };
+    } catch (exc) {
+      console.warn(`[S1 Editors] ${route} failed`, exc);
+    }
+  }
+  if (api && typeof api.getModels === "function") {
+    try {
+      const names = loraNamesFromModels(await api.getModels("loras"));
+      if (names) return { names, note: "" };
+    } catch (exc) {
+      console.warn("[S1 Editors] getModels(loras) failed", exc);
+    }
+  }
+  try {
+    const names = loraNamesFromModels(await readJson("/models/loras"));
+    if (names) return { names, note: "" };
+  } catch (exc) {
+    console.warn("[S1 Editors] /models/loras failed", exc);
+  }
+  return { names: [], note: EMPTY_LORA_HINT };
+}
+
+function ensureLoraCatalog() {
+  if (loraCatalog.status === "loading" || loraCatalog.status === "ready") return;
+  const token = ++loraCatalogToken;
+  loraCatalog = { status: "loading", names: [], note: "" };
+  void fetchLoraNames()
+    .then((result) => {
+      if (token !== loraCatalogToken) return;
+      const names = Array.isArray(result?.names) ? result.names : [];
+      loraCatalog = { status: "ready", names, note: names.length ? "" : result?.note || EMPTY_LORA_HINT };
+      if (state.kind === "lora" && bodyEl) {
+        syncFromDom();
+        renderBody();
+      }
+    })
+    .catch((exc) => {
+      if (token !== loraCatalogToken) return;
+      console.warn("[S1 Editors] LoRA list failed", exc);
+      loraCatalog = { status: "ready", names: [], note: EMPTY_LORA_HINT };
+      if (state.kind === "lora" && bodyEl) {
+        syncFromDom();
+        renderBody();
+      }
+    });
+}
+
+function refreshLoraCatalog() {
+  loraCatalogToken += 1;
+  loraCatalog = { status: "idle", names: [], note: "" };
+  ensureLoraCatalog();
+}
+
+function syncLoraDatalist() {
+  try {
+    if (typeof document === "undefined") return;
+    let list = document.getElementById("s1-lora-names");
+    if (!list) {
+      list = document.createElement("datalist");
+      list.id = "s1-lora-names";
+      document.body.appendChild(list);
+    }
+    list.replaceChildren();
+    const names = Array.isArray(loraCatalog.names) ? loraCatalog.names : [];
+    for (const name of names) {
+      const option = document.createElement("option");
+      option.value = name;
+      list.append(option);
+    }
+  } catch (exc) {
+    console.warn("[S1 Editors] could not build the LoRA datalist", exc);
+  }
+}
+
+function fillLoraSelect(select, names, selected) {
+  select.replaceChildren();
+  const placeholder = document.createElement("option");
+  placeholder.value = "";
+  placeholder.textContent = "Browse loras…";
+  select.append(placeholder);
+  for (const name of names) {
+    const option = document.createElement("option");
+    option.value = name;
+    option.textContent = name;
+    select.append(option);
+  }
+  if (selected && names.includes(selected)) select.value = selected;
+}
+
+function loraPicker(path, names, selected) {
+  const picker = el("div", "s1-lora-picker");
+  const filter = document.createElement("input");
+  filter.type = "search";
+  filter.placeholder = "Filter loras…";
+  filter.dataset.loraFilter = "1";
+  filter.autocomplete = "off";
+  filter.spellcheck = false;
+  const select = document.createElement("select");
+  select.className = "s1-lora-list";
+  select.dataset.loraPick = path;
+  select.size = 6;
+  select._s1Names = names.slice();
+  fillLoraSelect(select, names, selected);
+  picker.append(filter, select);
+  return picker;
+}
+
+function loraNameField(entryPath, value) {
+  const path = `${entryPath}.name`;
+  const wrap = el("div", "s1-field");
+  wrap.append(el("span", "s1-label", "name"));
+  const input = document.createElement("input");
+  input.type = "text";
+  input.value = value ?? "";
+  input.dataset.path = path;
+  input.autocomplete = "off";
+  input.spellcheck = false;
+  input.setAttribute("list", "s1-lora-names");
+  input.placeholder = "relative name under models/loras";
+  wrap.append(input);
+  const names = Array.isArray(loraCatalog.names) ? loraCatalog.names : [];
+  if (!names.length) return wrap;
+  const open = state.openLoraBrowse === path;
+  wrap.append(button(open ? "Hide lora list" : "Browse loras…", "browse-loras", { browse: path }));
+  if (open) wrap.append(loraPicker(path, names, value ?? ""));
+  if (value && !names.includes(value)) {
+    wrap.append(hint("This name is not in the current loras list. It is still saved as name."));
+  }
+  return wrap;
+}
+
+function filterLoraOptions(input) {
+  const select = input.parentElement?.querySelector("select[data-lora-pick]");
+  if (!select || !Array.isArray(select._s1Names)) return;
+  const query = input.value.trim().toLowerCase();
+  const matched = select._s1Names.filter((name) => name.toLowerCase().includes(query));
+  fillLoraSelect(select, matched, select.value);
+  const placeholder = select.options[0];
+  if (placeholder && !placeholder.value) placeholder.textContent = query ? "Matching loras…" : "Browse loras…";
+}
+
+function applyLoraPick(select) {
+  const name = select.value;
+  if (!name || !state.model) return;
+  const textInput = select.closest?.(".s1-field")?.querySelector("input[data-path]");
+  if (textInput) textInput.value = name;
+  setPath(state.model, select.dataset.loraPick, name);
+  if (state.tone === "ok") setMessage("", "");
+  syncFromDom();
+  renderBody();
+}
+
 function renderLoras() {
-  bodyEl.append(hint("File names are typed by hand. This editor does not browse the loras/ folder."));
+  ensureLoraCatalog();
+  syncLoraDatalist();
+  const names = Array.isArray(loraCatalog.names) ? loraCatalog.names : [];
+  bodyEl.append(
+    hint("The name field stores the relative file name, the same string as the stock Lora Loader. Type it, or pick from Browse loras."),
+  );
+  if (loraCatalog.status === "loading") bodyEl.append(hint("Loading the LoRA list from ComfyUI…"));
+  else if (!names.length) bodyEl.append(hint(loraCatalog.note || EMPTY_LORA_HINT));
+  bodyEl.append(button("Refresh loras", "refresh-loras"));
   state.model.loras.forEach((entry, index) => {
     const path = `loras.${index}`;
     const title = entry.lora_id ? `LoRA ${index + 1} · ${entry.lora_id}` : `LoRA ${index + 1}`;
     const box = card(title, listButtons("loras", index, state.model.loras.length), [
       field("lora_id", `${path}.lora_id`, entry.lora_id, { mono: true }),
-      field("name", `${path}.name`, entry.name, { mono: true }),
+      loraNameField(path, entry.name),
       row(
         field("strength_model", `${path}.strength_model`, showNumber(entry.strength_model), { decimal: true }),
         field("strength_clip", `${path}.strength_clip`, showNumber(entry.strength_clip), { decimal: true }),
@@ -545,6 +740,7 @@ function loadNode(node) {
   state.widgetName = spec?.widget || null;
   state.model = null;
   state.raw = "";
+  state.openLoraBrowse = "";
   if (!spec) {
     setMessage("This node has no S1 editor.", "error");
     renderAll();
@@ -645,7 +841,20 @@ function onClick(event) {
     tryForm();
     return;
   }
+  if (act === "refresh-loras") {
+    if (state.model) syncFromDom();
+    refreshLoraCatalog();
+    renderBody();
+    return;
+  }
   if (!state.model) return;
+  if (act === "browse-loras") {
+    syncFromDom();
+    const path = target.dataset.browse || "";
+    state.openLoraBrowse = state.openLoraBrowse === path ? "" : path;
+    renderBody();
+    return;
+  }
   if (act === "add") {
     syncFromDom();
     const list = getByPath(state.model, target.dataset.list);
@@ -668,7 +877,12 @@ function onClick(event) {
 
 function onInput(event) {
   const input = event.target;
-  if (!(input instanceof HTMLElement) || !state.model || !input.dataset.path) return;
+  if (!(input instanceof HTMLElement)) return;
+  if (input.dataset.loraFilter != null) {
+    filterLoraOptions(input);
+    return;
+  }
+  if (!state.model || !input.dataset.path) return;
   if (input.dataset.kind === "tags" || input.dataset.kind === "ids") setPath(state.model, input.dataset.path, splitList(input.value));
   else if (input.type === "checkbox") setPath(state.model, input.dataset.path, input.checked);
   else setPath(state.model, input.dataset.path, input.value);
@@ -677,7 +891,12 @@ function onInput(event) {
 
 function onChange(event) {
   const input = event.target;
-  if (!(input instanceof HTMLElement) || !state.model || !input.dataset.path) return;
+  if (!(input instanceof HTMLElement)) return;
+  if (input.dataset.loraPick) {
+    applyLoraPick(input);
+    return;
+  }
+  if (!state.model || !input.dataset.path) return;
   syncFromDom();
   if (input.dataset.rerender === "type") {
     const parts = input.dataset.path.split(".");

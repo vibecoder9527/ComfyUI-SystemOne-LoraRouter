@@ -639,3 +639,68 @@ export function splitList(text) {
     .map((item) => item.trim())
     .filter((item) => item !== "");
 }
+
+function uniqueStrings(value) {
+  if (!Array.isArray(value)) return null;
+  const seen = new Set();
+  const names = [];
+  for (const item of value) {
+    if (typeof item !== "string" || item === "" || seen.has(item)) continue;
+    seen.add(item);
+    names.push(item);
+  }
+  return names;
+}
+
+// Stock Lora Loader publishes its file list as the lora_name combo on
+// /object_info. An empty array means the list was present and had no files.
+// null means this payload has no recognizable list.
+export function loraNamesFromSpec(spec) {
+  if (Array.isArray(spec)) {
+    if (Array.isArray(spec[0])) return uniqueStrings(spec[0]);
+    if (spec[0] === "COMBO" && Array.isArray(spec[1])) return uniqueStrings(spec[1]);
+    if (spec[0] === "COMBO" && spec[1] && typeof spec[1] === "object" && Array.isArray(spec[1].options)) {
+      return uniqueStrings(spec[1].options);
+    }
+    return null;
+  }
+  if (spec && typeof spec === "object") {
+    if (Array.isArray(spec.options)) return uniqueStrings(spec.options);
+    if (Array.isArray(spec.values)) return uniqueStrings(spec.values);
+  }
+  return null;
+}
+
+export function loraNamesFromNodeInfo(info) {
+  if (!info || typeof info !== "object") return null;
+  const input = info.input && typeof info.input === "object" ? info.input : null;
+  const pools = input ? [input.required, input.optional] : [info.required, info.optional];
+  for (const pool of pools) {
+    if (!pool || typeof pool !== "object" || !Object.prototype.hasOwnProperty.call(pool, "lora_name")) continue;
+    return loraNamesFromSpec(pool.lora_name);
+  }
+  return null;
+}
+
+export function loraNamesFromInfo(data) {
+  if (!data || typeof data !== "object" || Array.isArray(data)) return null;
+  for (const key of ["LoraLoader", "LoraLoaderModelOnly"]) {
+    if (!data[key]) continue;
+    const names = loraNamesFromNodeInfo(data[key]);
+    if (names) return names;
+  }
+  if (data.input) return loraNamesFromNodeInfo(data);
+  return null;
+}
+
+export function loraNamesFromModels(data) {
+  if (!Array.isArray(data)) return null;
+  return uniqueStrings(
+    data.map((item) => {
+      if (typeof item === "string") return item;
+      if (item && typeof item.name === "string") return item.name;
+      if (item && typeof item.filename === "string") return item.filename;
+      return "";
+    }),
+  );
+}

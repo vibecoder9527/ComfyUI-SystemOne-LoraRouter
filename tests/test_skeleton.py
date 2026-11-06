@@ -12,6 +12,7 @@ import inspect
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import unittest
@@ -1018,6 +1019,104 @@ class NodeTests(unittest.TestCase):
         self.assertIn('name: "SystemOne.LoraRouter.UI"', extension)
         self.assertIn("registerSidebarTab", extension)
         self.assertIn("Open visual editor", extension)
+
+    def test_lora_picker_reads_object_info_and_keeps_typed_names(self):
+        self.assertEqual(PKG.WEB_DIRECTORY, "./js")
+        self.assertTrue((ROOT / "js" / "s1_editors.js").is_file())
+        self.assertTrue((ROOT / "js" / "s1_model.js").is_file())
+        editors = (ROOT / "js" / "s1_editors.js").read_text(encoding="utf-8")
+        model_js = (ROOT / "js" / "s1_model.js").read_text(encoding="utf-8")
+        self.assertIn('from "../../scripts/api.js"', editors)
+        self.assertIn("/object_info/LoraLoader", editors)
+        self.assertIn("/object_info/LoraLoaderModelOnly", editors)
+        self.assertIn('"/object_info"', editors)
+        self.assertIn("loraNamesFromInfo", editors)
+        self.assertIn("lora_name", model_js)
+        self.assertIn("/models/loras", editors)
+        self.assertIn("Browse loras", editors)
+        self.assertIn("Needs a running ComfyUI.", editors)
+        self.assertIn("Typed names still work.", editors)
+        self.assertIn("`${entryPath}.name`", editors)
+        self.assertNotIn("S1_THEME_SEQ", editors)
+        init_text = (ROOT / "__init__.py").read_text(encoding="utf-8")
+        self.assertIn('WEB_DIRECTORY = "./js"', init_text)
+        node = shutil.which("node")
+        if node is None:
+            self.skipTest("node is not installed")
+        for name in ("s1_editors.js", "s1_model.js"):
+            checked = subprocess.run(
+                [node, "--check", str(ROOT / "js" / name)],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(checked.returncode, 0, checked.stderr)
+        script = r"""
+import { loraNamesFromInfo, loraNamesFromModels } from "./js/s1_model.js";
+
+function assert(cond, message) {
+  if (!cond) {
+    console.error(message);
+    process.exit(1);
+  }
+}
+
+const wrapped = {
+  LoraLoader: {
+    input: {
+      required: {
+        lora_name: [["a.safetensors", "sub/b.safetensors", "a.safetensors"], { tooltip: "x" }],
+      },
+    },
+  },
+};
+assert(
+  JSON.stringify(loraNamesFromInfo(wrapped)) === JSON.stringify(["a.safetensors", "sub/b.safetensors"]),
+  "wrapped LoraLoader list",
+);
+
+const modelOnly = {
+  LoraLoaderModelOnly: {
+    input: { required: { lora_name: [["only.safetensors"], {}] } },
+  },
+};
+assert(
+  JSON.stringify(loraNamesFromInfo(modelOnly)) === JSON.stringify(["only.safetensors"]),
+  "LoraLoaderModelOnly",
+);
+
+const direct = { input: { required: { lora_name: [["direct.safetensors"]] } } };
+assert(
+  JSON.stringify(loraNamesFromInfo(direct)) === JSON.stringify(["direct.safetensors"]),
+  "direct node info",
+);
+
+const empty = { LoraLoader: { input: { required: { lora_name: [[], {}] } } } };
+assert(JSON.stringify(loraNamesFromInfo(empty)) === "[]", "empty list");
+assert(loraNamesFromInfo({ CheckpointLoaderSimple: {} }) === null, "missing loader");
+assert(loraNamesFromInfo(null) === null, "null payload");
+
+const combo = { input: { required: { lora_name: ["COMBO", { options: ["c.safetensors"] }] } } };
+assert(JSON.stringify(loraNamesFromInfo(combo)) === JSON.stringify(["c.safetensors"]), "combo options");
+
+assert(
+  JSON.stringify(
+    loraNamesFromModels(["m.safetensors", { name: "n.safetensors" }, { filename: "o.safetensors" }, 3]),
+  ) === JSON.stringify(["m.safetensors", "n.safetensors", "o.safetensors"]),
+  "models payload",
+);
+assert(loraNamesFromModels({ files: [] }) === null, "models object is not a list");
+console.log("ok");
+"""
+        completed = subprocess.run(
+            [node, "--input-type=module", "--eval", script],
+            check=False,
+            capture_output=True,
+            text=True,
+            cwd=str(ROOT),
+        )
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        self.assertIn("ok", completed.stdout)
 
     def test_nodes_run_example_and_passthrough_errors(self):
         lora_node = PKG.NODE_CLASS_MAPPINGS["S1LoraLibrary"]()

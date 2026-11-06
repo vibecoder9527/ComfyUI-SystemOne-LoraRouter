@@ -21,7 +21,8 @@ class S1LoraLibrary:
         "Parse a LoRA library JSON object into S1_LORA_LIB. "
         "Stores the file name under ComfyUI loras/ and the default strengths. "
         "Does not load the weight file. "
-        "The S1 Editors sidebar, or the Open visual editor button, edits library_json."
+        "The S1 Editors sidebar, or the Open visual editor button, edits library_json. "
+        "Its name field can pick a file from the ComfyUI loras list; typed names still work."
     )
 
     @classmethod
