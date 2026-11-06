@@ -68,12 +68,12 @@ plan = plan_sequence(open("examples/legacy/sequence.minimal.json", encoding="utf
 - A step that starts disabled and has an `enable_step` action becomes `run: when_upstream`. Each `when` becomes a clause. The clause's `theme_id` is the referenced step's `theme_id`, not the old `step_id`.
 - A step that starts disabled and has no `enable_step` becomes `run: disabled`.
 - `rewrite_*` and `disable_step` become warnings.
-- The same `theme_id` on more than one step is a warning. A result chain requires unique theme ids.
+- The same `theme_id` on more than one step is a warning. A result chain still requires unique theme ids at runtime. The editor assigns a free `theme_N` when you add or duplicate a Theme, and it leaves a unique saved id in place. Two restored nodes that already share an id are reported and not rewritten, so a saved enable rule is not moved.
 - The plan's `removed` list names `S1ThemeLibrary`, `S1ThemeSequence`, `lora_bindings`, `fallback_option_id`, `strength_conflict`, and `sequence_json`.
 
 For `examples/legacy/sequence.minimal.json` the plan is: art style `run=enabled`, character pack `run=when_upstream` with `includes_any` / `anime` on theme `art_style`. The `rewrite_instructions` and `rewrite_options` actions are warnings. The character theme in `examples/theme.character_pack.json` still lists both `waifu_a` and `waifu_b`. The old rewrite that dropped `waifu_b` is not applied. Delete that option yourself if you still want it gone.
 
-Paste each planned `enable_json` onto the matching Theme node and set `run`. Connect `theme_result` to the next theme's `upstream`, then connect the last result to `S1LoraAggregate` (LoRA Aggregate) with the library and MODEL. Use `S1ThemeCollect` only when the two results do not already share a theme id.
+Paste each planned `enable_json` onto the matching Theme node and set `run`. Connect `theme_result` to the next theme's `upstream`, then connect the last result to `S1LoraAggregate` (LoRA Aggregate) with the library and MODEL. `S1ThemeCollect` keeps one copy of a shared ancestor when the decisions match, and raises when the same theme id carries two different decisions. A chain of Theme nodes still requires each running theme to have its own id.
 
 ## Checks after you paste
 

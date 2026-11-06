@@ -330,6 +330,162 @@ export function assignThemeDocument(model) {
   return model;
 }
 
+// theme_1, theme_2, ... with no leading zeros. theme_01 and art_style are manual.
+export function isAutoThemeId(value) {
+  return typeof value === "string" && /^theme_[1-9]\d*$/.test(value);
+}
+
+function themePayload(themeJson) {
+  if (typeof themeJson === "string") {
+    try {
+      const data = JSON.parse(themeJson.replace(/^\uFEFF/, ""));
+      if (!isObject(data)) return { ok: false, error: "theme_json must be a JSON object" };
+      return { ok: true, data };
+    } catch (exc) {
+      return { ok: false, error: `Invalid JSON: ${exc.message}` };
+    }
+  }
+  if (isObject(themeJson)) return { ok: true, data: themeJson };
+  return { ok: false, error: "theme_json must be a JSON object" };
+}
+
+function storedThemeId(data) {
+  const value = data?.theme_id;
+  if (!idKept(value)) return "";
+  return value;
+}
+
+function withThemeId(data, themeId) {
+  const out = {};
+  let sawId = false;
+  for (const key of Object.keys(data)) {
+    if (key === "theme_id") {
+      out.theme_id = themeId;
+      sawId = true;
+    } else out[key] = data[key];
+  }
+  if (sawId) return out;
+  const ordered = {};
+  if (Object.prototype.hasOwnProperty.call(out, "version")) {
+    ordered.version = out.version;
+    delete out.version;
+  }
+  ordered.theme_id = themeId;
+  for (const key of Object.keys(out)) ordered[key] = out[key];
+  return ordered;
+}
+
+function entryLabel(row) {
+  return row.label || row.key;
+}
+
+/**
+ * Assign graph-unique theme ids without rewriting enable rules.
+ *
+ * `entries` are in graph order. Each is `{key, label, origin, themeJson, enableJson}`.
+ * `origin` is `new`, `duplicate`, or `restored`.
+ *
+ * A new or duplicated node keeps a non-empty id that nobody else kept, and
+ * otherwise takes the lowest free theme_N. Restored non-empty ids are claimed
+ * first, so a new theme_1 does not displace a saved theme_1. Two restored
+ * nodes that share a non-empty id are a conflict: both documents stay, because
+ * renaming one would retarget a saved enable rule that names that id.
+ * A blank restored id is filled. enableJson is never edited.
+ */
+export function planThemeIds(entries) {
+  const list = Array.isArray(entries) ? entries : [];
+  const rows = list.map((entry, index) => {
+    const key = entry && entry.key != null && String(entry.key) !== "" ? String(entry.key) : `entry_${index}`;
+    const origin = entry?.origin === "restored" || entry?.origin === "duplicate" ? entry.origin : "new";
+    const parsed = themePayload(entry?.themeJson);
+    return {
+      index,
+      key,
+      label: entry?.label ? String(entry.label) : "",
+      origin,
+      themeJson: entry?.themeJson,
+      enableJson: entry?.enableJson,
+      parsed,
+      themeId: parsed.ok ? storedThemeId(parsed.data) : "",
+    };
+  });
+
+  const conflicts = [];
+  const restoredById = new Map();
+  for (const row of rows) {
+    if (!row.parsed.ok) {
+      conflicts.push({
+        themeId: "",
+        keys: [row.key],
+        reason: `Node ${entryLabel(row)} has unreadable theme_json (${row.parsed.error}). It was left unchanged.`,
+      });
+      continue;
+    }
+    if (row.origin !== "restored" || !row.themeId) continue;
+    const keys = restoredById.get(row.themeId) || [];
+    keys.push(row.key);
+    restoredById.set(row.themeId, keys);
+  }
+  const contested = new Set();
+  for (const [themeId, keys] of restoredById) {
+    if (keys.length < 2) continue;
+    contested.add(themeId);
+    const labels = keys.map((key) => entryLabel(rows.find((row) => row.key === key)));
+    conflicts.push({
+      themeId,
+      keys: keys.slice(),
+      reason:
+        `Restored nodes share theme_id ${JSON.stringify(themeId)} (${labels.join(", ")}). ` +
+        "Their theme JSON and enable rules were left unchanged so a saved enable rule is not retargeted.",
+    });
+  }
+
+  const used = new Set(contested);
+  const decisionByKey = new Map();
+  for (const row of rows) {
+    if (!row.parsed.ok) {
+      decisionByKey.set(row.key, { changed: false, themeId: "" });
+      continue;
+    }
+    if (row.origin === "restored" && row.themeId) {
+      if (!contested.has(row.themeId)) used.add(row.themeId);
+      decisionByKey.set(row.key, { changed: false, themeId: row.themeId });
+    }
+  }
+  for (const row of rows) {
+    if (decisionByKey.has(row.key)) continue;
+    let themeId = row.themeId;
+    let changed = false;
+    if (!themeId || used.has(themeId)) {
+      themeId = nextThemeId([...used]);
+      changed = true;
+    }
+    used.add(themeId);
+    decisionByKey.set(row.key, { changed, themeId });
+  }
+
+  const assignments = [];
+  const unchanged = [];
+  for (const row of rows) {
+    const decision = decisionByKey.get(row.key);
+    let themeJson = row.themeJson;
+    if (decision.changed) {
+      const next = withThemeId(row.parsed.data, decision.themeId);
+      themeJson = typeof row.themeJson === "string" ? JSON.stringify(next, null, 2) : next;
+    }
+    assignments.push({
+      key: row.key,
+      themeId: decision.themeId,
+      themeJson,
+      changed: decision.changed,
+      enableJson: row.enableJson,
+      conflict: conflicts.some((conflict) => conflict.keys.includes(row.key)),
+    });
+    if (!decision.changed) unchanged.push(row.key);
+  }
+  return { assignments, conflicts, unchanged };
+}
+
 export function fieldPathsFromError(message) {
   const text = String(message || "");
   const paths = [];

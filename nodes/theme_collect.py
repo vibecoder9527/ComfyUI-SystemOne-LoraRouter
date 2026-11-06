@@ -8,19 +8,23 @@ CATEGORY = "SystemOne/LoraRouter"
 
 
 class S1ThemeCollect:
-    """Append result b after result a. Duplicate theme ids raise."""
+    """Append result b after result a. Identical theme ids collapse once."""
 
     CATEGORY = CATEGORY
     FUNCTION = "merge"
     RETURN_TYPES = ("S1_THEME_RESULT",)
     RETURN_NAMES = ("theme_result",)
     OUTPUT_TOOLTIPS = (
-        "Decisions from a, then decisions from b. Tags are recomputed in that order.",
+        "First copy of each theme id from a, then ids that appear only in b. "
+        "Tags are recomputed from the kept decisions.",
     )
     DESCRIPTION = (
-        "Join two S1_THEME_RESULT chains. Wire the output into another Theme's "
+        "Join two S1_THEME_RESULT values. Wire the output into another Theme's "
         "upstream input, another Theme Collect, or LoRA Aggregate. "
-        "Order is a then b. A repeated theme_id raises; it is not overwritten. "
+        "Order is the first copy of each theme_id: all of a, then new ids from b. "
+        "The same decision for a theme_id already kept is dropped, so two branches "
+        "that share an ancestor merge that ancestor once. A different decision for "
+        "that id raises SchemaError and is not overwritten. "
         "Chain this node to merge more than two results."
     )
 

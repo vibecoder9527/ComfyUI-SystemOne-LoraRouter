@@ -11,6 +11,7 @@ import {
   SELECT_MODES,
   assignLoraIds,
   assignThemeDocument,
+  planThemeIds,
   blankClause,
   blankLora,
   blankOption,
@@ -662,12 +663,12 @@ function renderThemeFields() {
   const theme = state.model;
   bodyEl.append(
     hint(
-      "theme_id and option_id are assigned automatically (theme_1, option_1, and so on) and are read-only. Existing ids are kept, including manual ids.",
+      "theme_id is the id stored on this node. It is read-only. New and duplicated themes receive the next free theme_N on the graph before queue. A saved non-empty id stays when it does not collide. option_id values stay read-only too, and existing option ids are kept.",
     ),
   );
   bodyEl.append(
     hint(
-      "This form cannot see other Theme nodes. If a chain repeats theme_id, set a unique id in the JSON widget once; this form keeps it.",
+      "Enable rules are not rewritten when a theme id is assigned. upstream theme_id names another theme. A loaded workflow that repeats a theme_id keeps both saved documents and shows a theme_id conflict.",
     ),
   );
   const children = [
@@ -931,7 +932,7 @@ function loadNode(node) {
   }
   state.clean = true;
   state.invalidPaths = [];
-  setMessage("", "");
+  announceThemeConflict(node);
   renderAll();
 }
 
@@ -1060,7 +1061,7 @@ function liveWrite() {
   const idsChanged = idSignature() !== beforeIds;
   state.model = result.model;
   if (enableResult) state.enable = enableResult.model;
-  setMessage("", "");
+  announceThemeConflict(state.node);
   if (!hadModel || idsChanged) {
     renderAll();
     return;
@@ -1293,6 +1294,7 @@ function selectNode(node) {
 function openEditorForNode(node) {
   ensureShell();
   selectNode(node);
+  if (specFor(node)?.kind === "theme") reconcileThemeIds();
   loadNode(node);
   openModal();
 }
@@ -1330,13 +1332,210 @@ function attachButton(node) {
   fitNode(node);
 }
 
+const THEME_CONFLICT_SUFFIX = " (theme_id conflict)";
+
+let configuringGraph = false;
+let reconcilingThemes = false;
+let themeReconcilePending = false;
+// Nodes constructed while a workflow is loading. Their ids are stamped after
+// configure(), because nodeCreated runs before the saved id and widgets land.
+const restoredThisLoad = new Set();
+
+function isThemeNode(node) {
+  return specFor(node)?.kind === "theme";
+}
+
+function announceThemeConflict(node) {
+  const message = node?.s1ThemeIdConflict || "";
+  if (message) setMessage(message, "error");
+  else setMessage("", "");
+}
+
+function themeGroups() {
+  const groups = [];
+  const seen = new Set();
+  const visit = (graph) => {
+    if (!graph || seen.has(graph)) return;
+    seen.add(graph);
+    const nodes = graph._nodes || graph.nodes;
+    if (!Array.isArray(nodes)) return;
+    groups.push(nodes.filter(isThemeNode));
+    for (const node of nodes) {
+      const nested = node?.subgraph;
+      if (nested && nested !== graph) visit(nested);
+    }
+  };
+  visit(app.graph);
+  return groups;
+}
+
+function themeNodes() {
+  return themeGroups().flat();
+}
+
+// graphToPrompt reads serializeValue when it is set, otherwise widget.value.
+// Hooking the widget covers a queue path that does not call the wrapped app methods.
+function installThemeSerialize(node) {
+  const widget = findWidget(node, "theme_json");
+  if (!widget || widget.__s1ThemeSerialize) return;
+  const original = typeof widget.serializeValue === "function" ? widget.serializeValue : null;
+  widget.serializeValue = function s1ThemeSerialize(...args) {
+    if (!reconcilingThemes && !configuringGraph) reconcileThemeIds();
+    if (original) return original.apply(this, args);
+    return this.value;
+  };
+  widget.__s1ThemeSerialize = true;
+}
+
+function originForTheme(node) {
+  const flag = node?.s1ThemeRestored;
+  if (flag && flag.graphId === node.id) return "restored";
+  if (flag || node?.s1ThemePendingRestore) return "duplicate";
+  return "new";
+}
+
+function themeNodeLabel(node) {
+  const raw = String(node?.title || "Theme");
+  const title = raw.endsWith(THEME_CONFLICT_SUFFIX)
+    ? raw.slice(0, -THEME_CONFLICT_SUFFIX.length)
+    : raw;
+  return `${title} #${node?.id}`;
+}
+
+function showThemeConflict(node, message) {
+  const current = node.title || "Theme";
+  const base = current.endsWith(THEME_CONFLICT_SUFFIX)
+    ? current.slice(0, -THEME_CONFLICT_SUFFIX.length)
+    : current;
+  const next = message ? `${base}${THEME_CONFLICT_SUFFIX}` : base;
+  node.s1ThemeIdConflict = message || "";
+  if (current !== next) {
+    node.title = next;
+    node.setDirtyCanvas?.(true, true);
+  }
+}
+
+function applyThemePlan(nodes) {
+  for (const node of nodes) installThemeSerialize(node);
+  const byKey = new Map();
+  const entries = nodes.map((node, index) => {
+    const key = `n${index}`;
+    byKey.set(key, node);
+    return {
+      key,
+      label: themeNodeLabel(node),
+      origin: originForTheme(node),
+      themeJson: widgetText(findWidget(node, "theme_json")),
+      enableJson: widgetText(findWidget(node, "enable_json")),
+    };
+  });
+  const plan = planThemeIds(entries);
+  for (const assignment of plan.assignments) {
+    const node = byKey.get(assignment.key);
+    if (!node || !assignment.changed || typeof assignment.themeJson !== "string") continue;
+    writeNamed(node, "theme_json", assignment.themeJson);
+  }
+  const reasons = new Map();
+  for (const conflict of plan.conflicts) {
+    for (const key of conflict.keys) {
+      const lines = reasons.get(key) || [];
+      lines.push(conflict.reason);
+      reasons.set(key, lines);
+    }
+  }
+  for (const [key, node] of byKey) {
+    const message = (reasons.get(key) || []).join(" ");
+    showThemeConflict(node, message);
+  }
+  return plan;
+}
+
+// Number theme ids on each loaded graph. Widget values are what queue serializes,
+// so this runs before graphToPrompt reads them, not only when the modal opens.
+// A nested subgraph is its own id space. Restored clashes are flagged and not
+// rewritten. Enable widgets are not written.
+function reconcileThemeIds() {
+  if (reconcilingThemes) return null;
+  reconcilingThemes = true;
+  try {
+    const plans = themeGroups().map(applyThemePlan);
+    if (state.node && editorVisible()) announceThemeConflict(state.node);
+    return plans;
+  } finally {
+    reconcilingThemes = false;
+  }
+}
+
+function scheduleThemeReconcile() {
+  if (configuringGraph || themeReconcilePending) return;
+  themeReconcilePending = true;
+  const queue = typeof window !== "undefined" && window.setTimeout ? window.setTimeout.bind(window) : setTimeout;
+  queue(() => {
+    themeReconcilePending = false;
+    if (configuringGraph) return;
+    reconcileThemeIds();
+  }, 0);
+}
+
+function installQueueHooks() {
+  if (app.__s1ThemeQueueHooks) return;
+  app.__s1ThemeQueueHooks = true;
+  const wrap = (name) => {
+    const original = app[name];
+    if (typeof original !== "function") return;
+    app[name] = function s1ThemeBeforeQueue(...args) {
+      try {
+        reconcileThemeIds();
+      } catch (exc) {
+        console.warn("[S1] theme id reconcile failed", exc);
+      }
+      return original.apply(this, args);
+    };
+  };
+  // graphToPrompt reads widget values into the prompt. queuePrompt calls it
+  // on the frontends that still expose both. There is no extension hook that
+  // runs after a duplicate copies widgets and before that read.
+  wrap("queuePrompt");
+  wrap("graphToPrompt");
+}
+
 app.registerExtension({
   name: "SystemOne.LoraRouter.UI",
   async setup() {
+    installQueueHooks();
     ensureShell();
+  },
+  beforeConfigureGraph() {
+    configuringGraph = true;
+    restoredThisLoad.clear();
+  },
+  afterConfigureGraph() {
+    configuringGraph = false;
+    for (const node of restoredThisLoad) {
+      if (!isThemeNode(node)) continue;
+      node.s1ThemeRestored = { graphId: node.id };
+      node.s1ThemePendingRestore = false;
+    }
+    restoredThisLoad.clear();
+    reconcileThemeIds();
+  },
+  loadedGraphNode(node) {
+    if (!isThemeNode(node)) return;
+    node.s1ThemeRestored = { graphId: node.id };
+    node.s1ThemePendingRestore = false;
   },
   nodeCreated(node) {
     attachButton(node);
+    if (!isThemeNode(node)) return;
+    installThemeSerialize(node);
+    if (configuringGraph) {
+      // Saved widgets arrive in configure(), after this hook. Do not number yet.
+      restoredThisLoad.add(node);
+      node.s1ThemePendingRestore = true;
+      return;
+    }
+    node.s1ThemePendingRestore = false;
+    scheduleThemeReconcile();
   },
   getNodeMenuItems(node) {
     if (!specFor(node)) return;

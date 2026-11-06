@@ -41,10 +41,12 @@ import {
   fieldPathsFromError,
   loraNamesFromInfo,
   loraNamesFromModels,
+  isAutoThemeId,
   nextLoraId,
   nextOptionId,
   nextThemeId,
   parseEditorDocument,
+  planThemeIds,
 } from "./js/s1_model.js";
 
 function assert(cond, message) {
@@ -194,8 +196,147 @@ assert(JSON.stringify(loraNamesFromInfo(direct)) === JSON.stringify(["direct.saf
 assert(loraNamesFromInfo(null) === null, "null info");
 assert(JSON.stringify(loraNamesFromModels(["m.safetensors", { name: "n.safetensors" }, { filename: "o.safetensors" }, 3])) === JSON.stringify(["m.safetensors", "n.safetensors", "o.safetensors"]), "models");
 assert(loraNamesFromModels({ files: [] }) === null, "models object");
+
+assert(isAutoThemeId("theme_1") && isAutoThemeId("theme_12"), "auto ids");
+assert(!isAutoThemeId("theme_01") && !isAutoThemeId("theme_0") && !isAutoThemeId("art_style") && !isAutoThemeId("Theme_1"), "not auto");
+
+function themeText(id, title) {
+  return JSON.stringify({
+    version: 1,
+    theme_id: id,
+    title: title || "T",
+    instructions: "I",
+    select_mode: "single",
+    options: [],
+  });
+}
+const emptyEnable = JSON.stringify({ version: 1, match: "any", clauses: [] });
+const watchArt = JSON.stringify({
+  version: 1,
+  match: "any",
+  clauses: [{ theme_id: "art_style", op: "includes_any", option_ids: ["anime"] }],
+});
+const watchTheme1 = JSON.stringify({
+  version: 1,
+  match: "any",
+  clauses: [{ theme_id: "theme_1", op: "eq", option_ids: ["yes"] }],
+});
+
+const created = planThemeIds([
+  { key: "n1", origin: "new", themeJson: themeText("theme_1", "A"), enableJson: emptyEnable },
+  { key: "n2", origin: "new", themeJson: themeText("theme_1", "B"), enableJson: watchTheme1 },
+  { key: "n3", origin: "duplicate", themeJson: themeText("theme_1", "C"), enableJson: watchTheme1 },
+]);
+assert(created.conflicts.length === 0, "new nodes do not conflict");
+assert(created.assignments.map((item) => item.themeId).join(",") === "theme_1,theme_2,theme_3", "stable new ids");
+assert(created.assignments[0].changed === false, "first theme_1 stays");
+assert(created.assignments[1].changed === true && created.assignments[2].changed === true, "later copies change");
+assert(created.assignments[1].enableJson === watchTheme1 && created.assignments[2].enableJson === watchTheme1, "enable not rewritten");
+assert(created.assignments[1].enableJson.includes('"theme_1"'), "clause still names theme_1");
+assert(!created.assignments[2].enableJson.includes("theme_3"), "clause does not follow the copy");
+const again = planThemeIds(created.assignments.map((item) => ({
+  key: item.key,
+  origin: "new",
+  themeJson: item.themeJson,
+  enableJson: item.enableJson,
+})));
+assert(again.assignments.every((item) => item.changed === false), "second pass is a no-op");
+assert(again.assignments.map((item) => item.themeId).join(",") === "theme_1,theme_2,theme_3", "ids stay put");
+
+const art = themeText("art_style", "Art");
+const dup = planThemeIds([
+  { key: "src", origin: "restored", themeJson: art, enableJson: watchArt },
+  { key: "copy", origin: "duplicate", themeJson: art, enableJson: watchArt },
+]);
+assert(dup.assignments[0].themeId === "art_style" && dup.assignments[0].changed === false && dup.assignments[0].themeJson === art, "source manual id kept");
+assert(dup.assignments[1].themeId === "theme_1" && dup.assignments[1].changed === true, "duplicate manual id becomes theme_1");
+assert(dup.assignments[0].enableJson === watchArt && dup.assignments[1].enableJson === watchArt, "duplicate enable stays");
+assert(dup.conflicts.length === 0, "duplicate is not a restored conflict");
+
+const character = themeText("character_pack", "Cast");
+const restored = planThemeIds([
+  { key: "art", origin: "restored", themeJson: art, enableJson: watchArt },
+  { key: "cast", origin: "restored", themeJson: character, enableJson: emptyEnable },
+]);
+assert(restored.conflicts.length === 0, "unique restore");
+assert(restored.assignments[0].themeJson === art && restored.assignments[1].themeJson === character, "restore text untouched");
+assert(restored.assignments[0].enableJson === watchArt, "restore enable untouched");
+
+const clash = planThemeIds([
+  { key: "a", label: "Theme #4", origin: "restored", themeJson: art, enableJson: watchArt },
+  { key: "b", label: "Theme #9", origin: "restored", themeJson: art, enableJson: watchArt },
+]);
+assert(clash.conflicts.length === 1, "one restored conflict");
+assert(clash.conflicts[0].themeId === "art_style", "conflict names the id");
+assert(clash.conflicts[0].keys.join(",") === "a,b", "conflict names the nodes");
+assert(clash.conflicts[0].reason.includes("art_style") && clash.conflicts[0].reason.includes("Theme #4"), "conflict reason is specific");
+assert(clash.assignments[0].themeJson === art && clash.assignments[1].themeJson === art, "conflict does not rewrite theme json");
+assert(clash.assignments[0].enableJson === watchArt && clash.assignments[1].enableJson === watchArt, "conflict does not rewrite enable");
+assert(clash.assignments.every((item) => item.changed === false), "conflict assignments unchanged");
+
+const beside = planThemeIds([
+  { key: "fresh", origin: "new", themeJson: themeText("theme_1"), enableJson: emptyEnable },
+  { key: "old", origin: "restored", themeJson: themeText("theme_1"), enableJson: watchTheme1 },
+]);
+assert(beside.assignments.find((item) => item.key === "old").themeId === "theme_1", "restored theme_1 wins");
+assert(beside.assignments.find((item) => item.key === "old").changed === false, "restored widget stays");
+assert(beside.assignments.find((item) => item.key === "fresh").themeId === "theme_2", "new node takes the next id");
+assert(beside.assignments.find((item) => item.key === "old").enableJson === watchTheme1, "restored enable stays");
+assert(beside.conflicts.length === 0, "new beside restored is not a conflict");
+
+const gap = planThemeIds([
+  { key: "r1", origin: "restored", themeJson: themeText("theme_1"), enableJson: emptyEnable },
+  { key: "r3", origin: "restored", themeJson: themeText("theme_3"), enableJson: emptyEnable },
+  { key: "copy", origin: "duplicate", themeJson: themeText("theme_1"), enableJson: watchTheme1 },
+]);
+assert(gap.assignments.find((item) => item.key === "copy").themeId === "theme_2", "gap fill");
+assert(gap.assignments.find((item) => item.key === "r1").changed === false, "theme_1 kept");
+assert(gap.assignments.find((item) => item.key === "r3").changed === false, "theme_3 kept");
+
+const blank = planThemeIds([
+  { key: "kept", origin: "restored", themeJson: art, enableJson: watchArt },
+  { key: "blank", origin: "restored", themeJson: themeText("   "), enableJson: emptyEnable },
+]);
+assert(blank.assignments[0].themeId === "art_style" && blank.assignments[0].changed === false, "manual restore kept");
+assert(blank.assignments[1].themeId === "theme_1" && blank.assignments[1].changed === true, "blank restore filled");
+assert(blank.conflicts.length === 0, "blank restore is unambiguous");
+
+const unreadable = planThemeIds([{ key: "bad", origin: "new", themeJson: "{", enableJson: watchArt }]);
+assert(unreadable.assignments[0].changed === false && unreadable.assignments[0].themeJson === "{", "bad json left");
+assert(unreadable.assignments[0].enableJson === watchArt, "bad json enable left");
+assert(unreadable.conflicts.length === 1 && unreadable.conflicts[0].reason.includes("bad"), "bad json reported");
+
+const contested = planThemeIds([
+  { key: "a", origin: "restored", themeJson: themeText("theme_1"), enableJson: watchTheme1 },
+  { key: "b", origin: "restored", themeJson: themeText("theme_1"), enableJson: watchTheme1 },
+  { key: "c", origin: "new", themeJson: themeText("theme_1"), enableJson: emptyEnable },
+]);
+assert(contested.assignments[0].changed === false && contested.assignments[1].changed === false, "contested pair stays");
+assert(contested.assignments[2].themeId === "theme_2", "new node avoids the contested id");
+assert(contested.conflicts.length === 1 && contested.conflicts[0].keys.join(",") === "a,b", "conflict is only the restored pair");
 console.log("ok");
 """
+
+
+def plan_theme_ids(entries):
+    node = shutil.which("node")
+    if node is None:
+        raise unittest.SkipTest("node is not installed")
+    script = (
+        "import { planThemeIds } from './js/s1_model.js';\n"
+        "const plan = planThemeIds(JSON.parse(process.argv[1]));\n"
+        "process.stdout.write(JSON.stringify(plan));\n"
+    )
+    completed = subprocess.run(
+        [node, "--input-type=module", "--eval", script, json.dumps(entries)],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=str(ROOT),
+    )
+    if completed.returncode != 0:
+        raise AssertionError(completed.stderr or completed.stdout)
+    return json.loads(completed.stdout)
 
 
 class NodeTests(unittest.TestCase):
@@ -323,8 +464,16 @@ class NodeTests(unittest.TestCase):
         self.assertEqual([item["lora_id"] for item in parsed["applied"]], ["char_a", "style_anime_v3"])
         self.assertEqual(parsed["matched"][1]["strength_model"], 0.8)
         self.assertNotEqual(parsed["matched"][1]["strength_model"], 0.85)
-        with self.assertRaises(TYPES.SchemaError):
-            collect.merge(art, pack)
+        (shared_branch,) = collect.merge(art, pack)
+        self.assertEqual(
+            [item.theme_id for item in shared_branch.decisions],
+            ["art_style", "character_pack"],
+        )
+        self.assertEqual(shared_branch.tags, ["style_anime", "char_a", "char_b"])
+        self.assertEqual(
+            [item.theme_id for item in shared_branch.decisions].count("art_style"),
+            1,
+        )
         left, _left_report = theme_node.decide(
             positive="",
             negative="",
@@ -449,6 +598,92 @@ class NodeTests(unittest.TestCase):
         finally:
             APPLY._import_comfy = original
 
+    def test_planned_theme_ids_run_as_a_unique_chain(self):
+        def factory(tag, title):
+            return json.dumps(
+                {
+                    "version": 1,
+                    "theme_id": "theme_1",
+                    "title": title,
+                    "instructions": "I",
+                    "select_mode": "single",
+                    "options": [
+                        {
+                            "option_id": "yes",
+                            "label": "y",
+                            "description": "",
+                            "tags": [tag],
+                        }
+                    ],
+                }
+            )
+
+        empty = json.dumps({"version": 1, "match": "any", "clauses": []})
+        watch = json.dumps(
+            {
+                "version": 1,
+                "match": "any",
+                "clauses": [
+                    {"theme_id": "theme_1", "op": "includes_any", "option_ids": ["yes"]}
+                ],
+            }
+        )
+        entries = [
+            {"key": "a", "origin": "new", "themeJson": factory("ta", "A"), "enableJson": empty},
+            {"key": "b", "origin": "new", "themeJson": factory("tb", "B"), "enableJson": watch},
+            {"key": "c", "origin": "duplicate", "themeJson": factory("tc", "C"), "enableJson": watch},
+        ]
+        plan = plan_theme_ids(entries)
+        by_key = {item["key"]: item for item in plan["assignments"]}
+        self.assertEqual(
+            [by_key[key]["themeId"] for key in ("a", "b", "c")],
+            ["theme_1", "theme_2", "theme_3"],
+        )
+        self.assertEqual(plan["conflicts"], [])
+        self.assertEqual(by_key["b"]["enableJson"], watch)
+        self.assertEqual(by_key["c"]["enableJson"], watch)
+        self.assertNotIn("theme_3", by_key["c"]["enableJson"])
+        second = plan_theme_ids(
+            [
+                {
+                    "key": item["key"],
+                    "origin": "new",
+                    "themeJson": item["themeJson"],
+                    "enableJson": item["enableJson"],
+                }
+                for item in plan["assignments"]
+            ]
+        )
+        self.assertTrue(all(not item["changed"] for item in second["assignments"]))
+        self.assertEqual(
+            [item["themeId"] for item in second["assignments"]],
+            ["theme_1", "theme_2", "theme_3"],
+        )
+
+        theme_node = PKG.NODE_CLASS_MAPPINGS["S1Theme"]()
+        upstream = None
+        result = None
+        for key, run in zip(("a", "b", "c"), ("enabled", "when_upstream", "when_upstream")):
+            item = by_key[key]
+            result, _report = theme_node.decide(
+                positive="p",
+                negative="",
+                theme_json=item["themeJson"],
+                run=run,
+                enable_json=item["enableJson"],
+                api_key="",
+                api_model="",
+                upstream=upstream,
+            )
+            upstream = result
+        self.assertEqual(
+            [item.theme_id for item in result.decisions],
+            ["theme_1", "theme_2", "theme_3"],
+        )
+        self.assertTrue(all(item.status == "ok" for item in result.decisions))
+        self.assertEqual([item.selected for item in result.decisions], [["yes"], ["yes"], ["yes"]])
+        self.assertEqual(result.tags, ["ta", "tb", "tc"])
+
     def test_docs_describe_the_break(self):
         needles = (
             "S1Theme",
@@ -507,7 +742,19 @@ class NodeTests(unittest.TestCase):
         self.assertLess(editors.index('promptField("positive"'), editors.index('promptField("negative"'))
         self.assertIn("There is no fallback option.", editors)
         self.assertIn("export function assignThemeDocument", model_js)
+        self.assertIn("export function planThemeIds", model_js)
         self.assertNotIn("export function assignThemeIds", model_js)
+        self.assertIn("planThemeIds", editors)
+        self.assertIn("beforeConfigureGraph()", editors)
+        self.assertIn("loadedGraphNode(node)", editors)
+        self.assertIn("afterConfigureGraph()", editors)
+        self.assertIn('wrap("queuePrompt")', editors)
+        self.assertIn('wrap("graphToPrompt")', editors)
+        self.assertIn("serializeValue", editors)
+        self.assertIn("s1ThemeRestored", editors)
+        self.assertIn("theme_id conflict", editors)
+        self.assertNotIn("set a unique id in the JSON widget", editors)
+        self.assertNotIn("cannot see other Theme nodes", editors)
         self.assertIn("lora_bindings was removed; selected options contribute tags", model_js)
         self.assertIn("fallback_option_id was removed and is not applied", model_js)
         live = editors[editors.index("function liveWrite(") : editors.index("function pollWidgets(")]

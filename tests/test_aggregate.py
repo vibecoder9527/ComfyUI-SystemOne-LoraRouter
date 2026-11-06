@@ -168,7 +168,7 @@ class AggregateTests(unittest.TestCase):
         )
         self.assertEqual(out.report["skipped"], [])
 
-    def test_collect_is_disjoint_and_duplicate_theme_raises(self):
+    def test_collect_is_disjoint_and_conflicting_theme_raises(self):
         left = run_theme(
             theme_json=theme_doc(theme_id="left", options=[option("a", ["ta"])]),
             client=CountingClient(),
@@ -187,8 +187,65 @@ class AggregateTests(unittest.TestCase):
         with self.assertRaises(TYPES.SchemaError) as ctx:
             AGG.collect_theme_results(left, shared)
         self.assertIn("left", str(ctx.exception))
+        self.assertIn("conflicting", str(ctx.exception))
         with self.assertRaises(TYPES.SchemaError):
             AGG.collect_theme_results(left, object())
+
+    def test_collect_merges_a_shared_ancestor_once(self):
+        parent = run_theme(
+            theme_json=theme_doc(theme_id="parent", options=[option("a", ["ta"])]),
+            client=CountingClient(),
+        ).result
+        left = run_theme(
+            theme_json=theme_doc(theme_id="left", options=[option("b", ["tb"])]),
+            upstream=parent,
+            client=CountingClient(),
+        ).result
+        right = run_theme(
+            theme_json=theme_doc(theme_id="right", options=[option("c", ["tc"])]),
+            upstream=parent,
+            client=CountingClient(),
+        ).result
+        left.errors.append("shared")
+        right.errors.append("shared")
+        right.errors.append("only-right")
+        merged = AGG.collect_theme_results(left, right)
+        self.assertEqual([item.theme_id for item in merged.decisions], ["parent", "left", "right"])
+        self.assertEqual(merged.tags, ["ta", "tb", "tc"])
+        self.assertEqual(merged.tags.count("ta"), 1)
+        self.assertEqual(merged.errors, ["shared", "only-right"])
+        swapped = AGG.collect_theme_results(right, left)
+        self.assertEqual([item.theme_id for item in swapped.decisions], ["parent", "right", "left"])
+        self.assertEqual([item.theme_id for item in left.decisions], ["parent", "left"])
+        same = AGG.collect_theme_results(parent, parent)
+        self.assertEqual([item.theme_id for item in same.decisions], ["parent"])
+        self.assertEqual(same.tags, ["ta"])
+
+        def decision(theme_id, selected, tags, option_tags, raw=None):
+            return TYPES.ThemeDecision(
+                theme_id=theme_id,
+                status="ok",
+                enabled=True,
+                selected=list(selected),
+                tags=list(tags),
+                select_mode="single",
+                option_tags=list(option_tags),
+                raw=raw,
+                reason="ran",
+            )
+
+        base = TYPES.build_theme_result([decision("p", ["a"], ["ta"], [("a", ["ta"])], {"choice": "a"})])
+        other_tags = TYPES.build_theme_result(
+            [decision("p", ["a"], ["ta"], [("a", ["other"])], {"choice": "a"})]
+        )
+        with self.assertRaises(TYPES.SchemaError) as tags_ctx:
+            AGG.collect_theme_results(base, other_tags)
+        self.assertIn("p", str(tags_ctx.exception))
+        other_raw = TYPES.build_theme_result(
+            [decision("p", ["a"], ["ta"], [("a", ["ta"])], {"choice": "a", "extra": 1})]
+        )
+        with self.assertRaises(TYPES.SchemaError):
+            AGG.collect_theme_results(base, other_raw)
 
     def test_theme_errors_do_not_cancel_kept_tags(self):
         upstream = run_theme(

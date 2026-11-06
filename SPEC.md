@@ -34,15 +34,22 @@ Each Theme output already contains every upstream decision plus its own. Wire th
 
 A root that should always decide sets `run` to `enabled`. Every theme defaults to `disabled`. A disabled theme does not call SystemOne and does not add tags. It still appends a `skipped` decision, so a later theme can target it with `op: skipped`.
 
-Theme Collect merges two results that do not share a `theme_id`. Order is input `a`, then input `b`. Chain Collect nodes to merge more than two disjoint results. A repeated `theme_id` raises `SchemaError`. Collect has no `on_error`.
+Theme Collect merges two `S1_THEME_RESULT` values. Order is the first copy of each `theme_id`: every decision from input `a`, then decisions from input `b` whose id is not already kept. An identical later decision is dropped, so a shared ancestor is stored once and its tags are not doubled. Identical means status, enabled, selected ids, tags, select mode, option tag contributions, error, reason, and `raw` all match. A difference raises `SchemaError`. Collect has no `on_error`. Error strings already recorded are kept in first-seen order, without repeating the same string. Chain Collect nodes to merge more than two results.
 
-Do not collect two branches that both carry the same upstream theme. Theme B downstream of Theme A already contains A's decision, and Theme C downstream of A contains it too. Collecting B and C repeats `theme_id` A and raises. Put the branches on one chain instead:
+A fan-out that meets again is supported when the shared decisions match:
+
+```
+A (enabled) ──► B (when_upstream) ──► Theme Collect ──► Aggregate
+           └──► C (when_upstream) ──┘
+```
+
+Collect(B, C) yields A once, then B, then C, when B is input `a` and C is input `b`. A chain without Collect is still valid:
 
 ```
 A (enabled) ──► B (when_upstream, clauses target A's options) ──► C (when_upstream) ──► Aggregate
 ```
 
-B runs only when A's selection matches. C still sees A's selection and B's skip or answer, because both decisions are in the result C receives. One output may fan out to several downstream themes, but those branches meet again only through a chain, or through Collect when the results are disjoint (two independent roots with different theme ids).
+B runs only when A's selection matches. C still sees A's selection and B's skip or answer, because both decisions are in the result C receives. One Theme node still raises `SchemaError` before any HTTP call when its own `theme_id` is already in its upstream result. That is a second run of the same theme, not a merge of two snapshots.
 
 ## Theme node
 
@@ -110,7 +117,14 @@ One theme object. A `{ "themes": [...] }` library is rejected.
 - `lora_bindings` is rejected. Selected options contribute tags.
 - `fallback_option_id` is rejected and is not applied.
 
-`parse_theme` does not assign ids. The editor assigns a blank `theme_id` to `theme_1` and blank option ids to `option_N`, keeping any non-empty id. One theme node cannot see another node's ids. A chain that repeats a `theme_id` fails at runtime. Set a manual id in the JSON widget when the default would collide. A later edit keeps it.
+`parse_theme` does not assign ids. `assignThemeDocument` fills a blank id on one document with `theme_1` and blank option ids with `option_N`, and it keeps any non-empty id. Ids across Theme nodes come from `planThemeIds`, which runs when a Theme is added, after a workflow is configured, and again inside `queuePrompt` / `graphToPrompt` before widget values are copied into the prompt. The modal shows that stored id on a read-only line.
+
+- A new or duplicated node keeps a non-empty id that is still free, and otherwise takes the lowest free `theme_N`. Restored non-empty ids are reserved first, so a new `theme_1` does not displace a saved `theme_1`. Enable JSON is not rewritten.
+- A restored node keeps a non-empty id that no other restored node uses, including manual ids and `theme_2`. A blank restored id is filled with the next free `theme_N`, because no enable rule could have named an empty id.
+- Two restored nodes with the same non-empty id are a conflict. Neither theme JSON nor enable JSON is rewritten. The node title gains ` (theme_id conflict)` and the modal shows which id and which nodes. Queueing them in one result still raises `SchemaError`.
+- Among ordinary new nodes that share an id, the earlier node in the graph keeps it. Re-running the planner on a graph that is already unique changes nothing.
+- Each graph is numbered on its own. The walk is `app.graph` and each nested `node.subgraph`. The same `theme_1` in two subgraphs is not a conflict. The walk does not see a workflow that is not loaded. An API client that submits saved JSON without the extension uses the ids in that JSON.
+- A duplicate is numbered after LiteGraph copies widget values: on a timer after `nodeCreated`, again from `theme_json`'s `serializeValue`, and again inside `queuePrompt` / `graphToPrompt` when those methods exist. `nodeCreated` itself runs before that copy, and during workflow configure it does not number, because saved widget values are applied after that hook.
 
 ### Decision
 
@@ -207,11 +221,12 @@ Runtime parsing does not accept the old documents. `schema/migrate.py` is an off
 
 ## Known limitations
 
-- The modal syncs by polling while it is visible. It does not subscribe to widget changes.
-- The form cannot see other nodes, so a blank theme id becomes `theme_1` on that node alone.
+- The modal syncs by polling while it is visible. It does not subscribe to widget changes. Theme ids are still written before queue without opening the modal.
+- Restored duplicate theme ids are reported and left unchanged. The extension cannot repair a prompt that never loads the graph in the browser.
+- Numbering is per graph object (`app.graph`, and each `node.subgraph`). Other subgraph storage is not walked. A prompt built outside this extension is not renumbered.
 - Tag match is exact any-overlap. `enabled_default: false` excludes a LoRA even when a tag matches.
 - `rewrite_*`, per-binding strengths, and `strength_conflict` are not runtime behavior.
-- Theme Collect is binary. A diamond that repeats a theme id is rejected.
+- Theme Collect merges an identical shared ancestor once and rejects a conflicting theme id. It is still a two-input node.
 - There is no SystemOne answer preview in the editor.
 - `apply_loras` does not patch weights outside ComfyUI.
 - Invalid theme or enable JSON fails the theme node even when `on_error` is `passthrough`.

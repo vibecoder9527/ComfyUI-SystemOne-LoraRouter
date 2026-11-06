@@ -2,11 +2,14 @@
 
 ComfyUI loads this file from ``custom_nodes/ComfyUI-SystemOne-LoraRouter``.
 
-Wire one or more Theme nodes into a chain (or merge branches with Theme
-Collect). Wire the final ``S1_THEME_RESULT`` and a LoRA Library into LoRA
-Aggregate with MODEL. Themes default to disabled. A root sets ``run`` to
-``enabled``. A downstream theme sets ``run`` to ``when_upstream`` and targets
-upstream option ids in ``enable_json``.
+Wire one or more Theme nodes into a chain, or merge branches with Theme
+Collect. Collect keeps one copy of an identical shared decision and raises
+when the same theme id disagrees. Wire the final ``S1_THEME_RESULT`` and a
+LoRA Library into LoRA Aggregate with MODEL. Themes default to disabled. A
+root sets ``run`` to ``enabled``. A downstream theme sets ``run`` to
+``when_upstream`` and targets upstream option ids in ``enable_json``.
+The browser extension writes a free ``theme_N`` onto new and duplicated
+Theme nodes before queue. A unique saved id is left as stored.
 
 ``S1_LORA_LIB`` and ``S1_THEME_RESULT`` are custom type names. ComfyUI matches
 them as strings.

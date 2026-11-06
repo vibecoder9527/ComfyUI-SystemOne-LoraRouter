@@ -43,9 +43,16 @@ Themes default to `disabled`. A disabled theme does not call SystemOne and does 
 
 `when_upstream` turns the second theme on only when the upstream selection matches the clauses. `enable.when_anime.json` matches theme `art_style` when the selection includes option `anime`. That is selected-option targeting, not a bare on/off flag. A later theme can also target `eq`, `neq`, `includes_all`, `skipped`, or `answered`. See SPEC for the match table.
 
-Put further themes on the same chain. Each output already contains the upstream decisions, so the next theme can target any earlier `theme_id`. One chain is the supported way to build a tree: a theme whose clauses miss simply records `skipped` and passes the earlier tags through.
+Put further themes on the same chain. Each output already contains the upstream decisions, so the next theme can target any earlier `theme_id`. A theme whose clauses miss simply records `skipped` and passes the earlier tags through.
 
-Theme Collect joins two results that do not share a `theme_id` (two independent roots, for example). Wire Collect's output into Aggregate or into another Collect. Do not collect two branches that both descend from the same theme. Both results already contain that theme, and a repeated `theme_id` raises. SPEC shows the chain to use instead.
+Theme Collect joins two results. Decisions already in input `a` stay first. The same decision for a `theme_id` that is already present is kept once, so two branches that share an ancestor can meet:
+
+```
+A ──► B ──► Theme Collect ──► LoRA Aggregate
+ └──► C ──┘
+```
+
+Collect(B, C) keeps A's decision once, then B, then C. Tags from A are not doubled. A different decision for the same `theme_id` raises `SchemaError`. Chain Collect to merge more than two results. A single chain, with no Collect, still works.
 
 The character theme runs only after the art-style theme selects `anime`. Its options contribute tags `char_a` and `char_b`. The library entry `char_a` has tag `char_a`, so Aggregate applies `character_a.safetensors` at the library strength `0.9` / `0.9`. The art-style option `anime` contributes `style_anime`, which applies `anime_style_v3.safetensors` at `0.8` / `0.8`. Option `none` is `none_option_id`. If it is selected, its tag `should_not_apply` is not contributed. `char_b` matches no library entry, so it adds no LoRA.
 
@@ -77,7 +84,7 @@ The sidebar tab is gone. Nothing in this package registers an S1 Editors sidebar
 
 Valid edits reach the widgets after about 220ms. Invalid fields get a red outline (`s1-invalid`) and are not written. A Theme write updates `theme_json`, `enable_json`, `positive`, `negative`, and `run` together, or it updates none of them. There is no Apply to node button and no Reload from node button.
 
-`lora_id`, `theme_id`, and `option_id` are assigned when you add a row and are read-only. Existing ids, including manual ones, stay. The form on one node cannot see the others, so a blank theme id becomes `theme_1` on that node. If a chain would repeat it, type a unique id into the JSON widget once. The form keeps that id. Enable clauses use an editable **upstream theme_id** so you can name the theme you are targeting. One strength control writes `strength_model` and `strength_clip`. The LoRA name can be picked from the ComfyUI loras list or typed.
+`lora_id`, `theme_id`, and `option_id` are read-only in the form. The theme id shown is the id stored on that node. Adding or duplicating a Theme writes the next free `theme_N` into `theme_json` before the prompt is queued, including when this modal stays closed. The first new theme keeps `theme_1`. The next becomes `theme_2`, filling gaps. A saved non-empty id that is unique on the loaded graph stays, including a manual id such as `art_style`. Enable JSON is not edited, so a copied clause still names the upstream theme. If a loaded workflow has two Theme nodes with the same non-empty `theme_id`, both documents are left as saved and the node title notes a theme_id conflict. That avoids pointing a saved enable rule at a different node. Enable clauses use an editable **upstream theme_id**. One strength control writes `strength_model` and `strength_clip`. The LoRA name can be picked from the ComfyUI loras list or typed.
 
 Restart ComfyUI after installing so it loads `js/`.
 
@@ -96,9 +103,11 @@ Unittest discovers `tests/test_*.py`. It does not call SystemOne and does not ne
 
 ## Limitations
 
-- Modal sync polls about every 500ms while the modal is visible. It does not hook widget changes.
+- Modal sync polls about every 500ms while the modal is visible. It does not hook widget changes. Theme ids are still written before queue without opening the modal.
+- Numbering runs in the browser on each loaded graph, including each nested `node.subgraph` as its own id space. A workflow that is not loaded is unchanged. An API client that queues saved JSON without this extension uses the ids already in that JSON.
+- A restored duplicate `theme_id` is reported and not rewritten. Queueing those nodes in one result still raises `SchemaError`. That is the conflict, not a retargeted enable rule.
 - Tag match is an exact string overlap. A LoRA with `enabled_default: false` is skipped even when a tag matches.
 - Old `lora_bindings`, per-binding strengths, `strength_conflict`, and `rewrite_*` actions are not applied at runtime.
-- Theme Collect rejects a repeated `theme_id`, so a diamond merge of two children of the same parent is not the supported graph.
+- Theme Collect merges an identical shared ancestor once and rejects a conflicting `theme_id`. It still has two inputs; chain it for more than two results. One Theme still refuses to run when its own `theme_id` is already upstream.
 - `apply_loras` is a no-op when ComfyUI is not importable.
 - There is no in-editor preview of a SystemOne answer.

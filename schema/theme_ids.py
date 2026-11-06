@@ -1,18 +1,19 @@
 """Editor helpers for theme ids and option ids.
 
 `js/s1_model.js` mirrors these (`assignThemeDocument`, `nextThemeId`,
-`nextOptionId`). `parse_theme` does not call this module. Stored JSON still
-requires `theme_id` and `option_id`.
+`nextOptionId`). `planThemeIds` in that file numbers one id per Theme node
+on the loaded graph. `parse_theme` does not call this module. Stored JSON
+still requires a non-empty `theme_id` and `option_id`.
 
 Option ids are unique within one theme. The smallest unused positive integer
 wins: `theme_1`, then `theme_2`, and `option_1`, `option_2`, filling gaps.
 A non-empty id is kept, including manual ids such as `art_style` or `anime`.
 Blank means missing, `None`, `""`, or whitespace.
 
-One theme node cannot see the other nodes' ids. A blank theme id becomes
-`theme_1` on that document. A chain that repeats a theme id fails at runtime.
-Set a manual id in the JSON widget when the default collides; a later edit
-keeps it.
+`assignThemeDocument` only sees one document, so a blank id there becomes
+`theme_1`. The graph planner is what gives the next Theme node `theme_2`.
+A chain that still repeats a theme id fails at runtime. A restored workflow
+that already repeats an id is left unchanged so an enable rule is not retargeted.
 """
 
 from __future__ import annotations

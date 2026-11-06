@@ -15,6 +15,7 @@ from .apply_loras import apply_loras
 from .schema.types import (
     LoraLibrary,
     SchemaError,
+    ThemeDecision,
     ThemeResult,
     build_theme_result,
     public_decision,
@@ -124,15 +125,67 @@ def aggregate_loras(
     return AggregateOutcome(model=outcome.model, clip=outcome.clip, report=report)
 
 
+def _same_decision(left: ThemeDecision, right: ThemeDecision) -> bool:
+    """True when two snapshots are the same decision, including ``raw``.
+
+    ``raw`` does not change tag matching, but a different stored answer is not
+    the same ancestor. Collect drops only a full match.
+    """
+
+    left_options = [(option_id, list(tags)) for option_id, tags in left.option_tags]
+    right_options = [(option_id, list(tags)) for option_id, tags in right.option_tags]
+    return (
+        left.theme_id == right.theme_id
+        and left.status == right.status
+        and left.enabled == right.enabled
+        and list(left.selected) == list(right.selected)
+        and list(left.tags) == list(right.tags)
+        and left.select_mode == right.select_mode
+        and left_options == right_options
+        and left.error == right.error
+        and left.reason == right.reason
+        and left.raw == right.raw
+    )
+
+
+def _merge_errors(left: ThemeResult, right: ThemeResult) -> list[str]:
+    merged: list[str] = []
+    seen: set[str] = set()
+    for item in list(left.errors) + list(right.errors):
+        if item in seen:
+            continue
+        seen.add(item)
+        merged.append(item)
+    return merged
+
+
 def collect_theme_results(left: ThemeResult, right: ThemeResult) -> ThemeResult:
-    """Append `right` after `left`. A repeated theme id raises ``SchemaError``."""
+    """Keep input ``a`` first, then new ids from ``b``.
+
+    An identical later decision for a ``theme_id`` already kept is dropped, so
+    a diamond that shares an ancestor contributes that decision and its tags
+    once. A different decision for the same id raises ``SchemaError``.
+    """
 
     if not isinstance(left, ThemeResult) or not isinstance(right, ThemeResult):
         raise SchemaError("Theme Collect inputs must be S1_THEME_RESULT values")
-    return build_theme_result(
-        list(left.decisions) + list(right.decisions),
-        list(left.errors) + list(right.errors),
-    )
+    merged: list[ThemeDecision] = []
+    kept: dict[str, ThemeDecision] = {}
+    for decision in list(left.decisions) + list(right.decisions):
+        if not isinstance(decision, ThemeDecision):
+            raise SchemaError("theme result decisions must be ThemeDecision values")
+        previous = kept.get(decision.theme_id)
+        if previous is None:
+            kept[decision.theme_id] = decision
+            merged.append(decision)
+            continue
+        if _same_decision(previous, decision):
+            continue
+        raise SchemaError(
+            f"conflicting theme_id {decision.theme_id!r} in the theme result: "
+            "the collected decisions do not match"
+        )
+    return build_theme_result(merged, _merge_errors(left, right))
 
 
 __all__ = [
