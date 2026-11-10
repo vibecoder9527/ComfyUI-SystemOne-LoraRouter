@@ -897,12 +897,34 @@ export function expandOptionOutputs(node) {
  * Only trailing (and interstitial unused) unconnected pads go away; option
  * backend indexes of kept slots do not change.
  */
-export function compactOptionOutputs(node) {
+function noneOptionIdFromWidget(node) {
+  const widgets = node?.widgets || [];
+  for (const widget of widgets) {
+    if (widget?.name !== "theme_json") continue;
+    const raw = widget.value == null ? "" : String(widget.value);
+    const parsed = parseEditorDocument("theme", raw);
+    if (!parsed.ok) return "";
+    ensureDefaultNoneOption(parsed.model);
+    return String(parsed.model.none_option_id || "");
+  }
+  return "";
+}
+
+function isNoneOutput(output, noneId) {
+  if (!output) return false;
+  const optionId = String(output.s1OptionId || "");
+  if (noneId && optionId && optionId === String(noneId)) return true;
+  if (optionId && isNoneLikeOption({ option_id: optionId })) return true;
+  return false;
+}
+
+export function compactOptionOutputs(node, noneOptionId) {
   if (!node) return { ok: false };
   expandOptionOutputs(node);
+  const noneId = noneOptionId || noneOptionIdFromWidget(node);
   const liveSlots = liveOriginSlots(node);
-  const kept = [];
-  const indexMap = new Map();
+  const regular = [];
+  const noneOuts = [];
   for (let index = 0; index < MAX_OPTION_OUTPUTS; index += 1) {
     const output = node.outputs[index];
     const live = outputHasLinks(output) || liveSlots.has(index);
@@ -910,6 +932,12 @@ export function compactOptionOutputs(node) {
     if (!used && !live) continue;
     output.hidden = false;
     output.s1PromptIndex = index;
+    if (isNoneOutput(output, noneId)) noneOuts.push([index, output]);
+    else regular.push([index, output]);
+  }
+  const kept = [];
+  const indexMap = new Map();
+  for (const [index, output] of regular.concat(noneOuts)) {
     indexMap.set(index, kept.length);
     kept.push(output);
   }
@@ -922,7 +950,7 @@ export function compactOptionOutputs(node) {
   kept.push(report);
   node.outputs = kept;
   remapOriginSlots(node, indexMap);
-  return { ok: true, visible: kept.length };
+  return { ok: true, visible: kept.length, noneLast: noneOuts.length ? kept.length - 2 : -1 };
 }
 
 /**
@@ -1195,6 +1223,77 @@ export function blankOption() {
   return { option_id: "", label: "", description: "", tags: [] };
 }
 
+/** Display order: user options in array order, then None last. Array/prompt indexes are unchanged. */
+export function optionDisplayOrder(options, noneOptionId) {
+  const list = Array.isArray(options) ? options.filter(Boolean) : [];
+  const noneId = String(noneOptionId || "").trim();
+  const rest = [];
+  const none = [];
+  for (const option of list) {
+    const id = String(option.option_id || "");
+    const isNone = (noneId && id === noneId) || (!noneId && isNoneLikeOption(option));
+    if (isNone) none.push(option);
+    else rest.push(option);
+  }
+  return rest.concat(none);
+}
+
+/**
+ * Append a new option after existing ones so None keeps its option_id and
+ * array/prompt index when it sits in the middle. nextOptionId fills the
+ * smallest free option_N and will not collide with None's id.
+ */
+export function addThemeOption(model) {
+  if (!model || typeof model !== "object") return { ok: false, error: "invalid theme" };
+  if (!Array.isArray(model.options)) model.options = [];
+  assignOptionIds(model.options);
+  ensureDefaultNoneOption(model);
+  if (model.options.length >= MAX_OPTION_OUTPUTS) {
+    return { ok: false, error: `cannot add an option; option outputs are capped at ${MAX_OPTION_OUTPUTS}` };
+  }
+  const existing = model.options.map((option) => option?.option_id).filter(Boolean);
+  const option = blankOption();
+  option.option_id = nextOptionId(existing);
+  model.options.push(option);
+  return { ok: true, model, option };
+}
+
+export function deleteThemeOption(model, optionId) {
+  if (!model || !Array.isArray(model.options)) return { ok: false, error: "invalid theme" };
+  ensureDefaultNoneOption(model);
+  const noneId = String(model.none_option_id || "");
+  if (!optionId || String(optionId) === noneId) {
+    return { ok: false, error: "the None option cannot be deleted" };
+  }
+  const next = model.options.filter((option) => String(option?.option_id) !== String(optionId));
+  if (next.length === model.options.length) return { ok: false, error: "option not found" };
+  model.options = next;
+  return { ok: true, model };
+}
+
+/** Move a non-None option among non-None slots. None stays at its array index. */
+export function moveThemeOption(model, optionId, direction) {
+  if (!model || !Array.isArray(model.options)) return { ok: false, moved: false };
+  ensureDefaultNoneOption(model);
+  const noneId = String(model.none_option_id || "");
+  if (!optionId || String(optionId) === noneId) return { ok: false, moved: false, error: "the None option cannot be moved" };
+  const options = model.options;
+  const movable = [];
+  options.forEach((option, index) => {
+    if (String(option?.option_id || "") !== noneId) movable.push(index);
+  });
+  const pos = movable.findIndex((index) => String(options[index]?.option_id) === String(optionId));
+  if (pos < 0) return { ok: false, moved: false, error: "option not found" };
+  const swap = pos + (direction < 0 ? -1 : 1);
+  if (swap < 0 || swap >= movable.length) return { ok: true, moved: false, model };
+  const left = movable[pos];
+  const right = movable[swap];
+  const temp = options[left];
+  options[left] = options[right];
+  options[right] = temp;
+  return { ok: true, moved: true, model };
+}
+
 export function blankClause() {
   return { theme_id: "", op: "includes_any", option_ids: [] };
 }
@@ -1220,6 +1319,140 @@ export function splitList(text) {
     .split(",")
     .map((item) => item.trim())
     .filter((item) => item !== "");
+}
+
+/** Trim, drop empties, and dedupe tags (first spelling wins, case-insensitive). */
+export function tokenizeTags(value) {
+  const parts = Array.isArray(value)
+    ? value.flatMap((item) => String(item ?? "").split(/[,\n]/))
+    : String(value ?? "").split(/[,\n]/);
+  const tags = [];
+  const seen = new Set();
+  for (const part of parts) {
+    const tag = String(part).trim();
+    if (!tag) continue;
+    const key = tag.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    tags.push(tag);
+  }
+  return tags;
+}
+
+export function addTagToken(tags, text) {
+  return tokenizeTags([...(Array.isArray(tags) ? tags : tokenizeTags(tags)), text]);
+}
+
+export function removeTagToken(tags, index) {
+  const current = tokenizeTags(tags);
+  if (!Number.isInteger(index) || index < 0 || index >= current.length) return current;
+  return current.filter((_, itemIndex) => itemIndex !== index);
+}
+
+export function tagsToCommaString(tags) {
+  return tokenizeTags(tags).join(", ");
+}
+
+export function isUsableLoraName(name) {
+  const text = String(name ?? "").trim();
+  if (!text) return false;
+  if (/^none$/i.test(text)) return false;
+  return true;
+}
+
+export function loraNameFromMenuValue(value) {
+  if (value == null) return "";
+  if (typeof value === "string") return value;
+  if (typeof value === "object") {
+    if (value.has_submenu) return "";
+    if (value.s1LoraName) return String(value.s1LoraName);
+    if (value.value != null && typeof value.value !== "object") return String(value.value);
+    const content = value.content != null ? String(value.content) : "";
+    if (content.startsWith("📁")) return "";
+    if (content) return content;
+  }
+  return String(value);
+}
+
+/** Nested folder tree from LoRA paths like "Anima/sub/name.safetensors". */
+export function buildLoraMenuTree(names) {
+  const root = { folders: new Map(), files: [] };
+  for (const name of names || []) {
+    const text = String(name ?? "");
+    if (!text) continue;
+    const parts = text.split(/[/\\]/).filter((part) => part.length);
+    if (parts.length <= 1) {
+      root.files.push(text);
+      continue;
+    }
+    let node = root;
+    for (let index = 0; index < parts.length - 1; index += 1) {
+      const key = parts[index];
+      if (!node.folders.has(key)) node.folders.set(key, { folders: new Map(), files: [] });
+      node = node.folders.get(key);
+    }
+    node.files.push(text);
+  }
+  return root;
+}
+
+function menuItemsFromLoraTree(node) {
+  const items = [];
+  const folderNames = [...node.folders.keys()].sort((left, right) => left.localeCompare(right));
+  for (const folder of folderNames) {
+    items.push({
+      content: `📁 ${folder}`,
+      has_submenu: true,
+      submenu: { options: menuItemsFromLoraTree(node.folders.get(folder)), className: "dark" },
+    });
+  }
+  const files = [...node.files].sort((left, right) => left.localeCompare(right));
+  for (const full of files) {
+    const base = full.split(/[/\\]/).pop();
+    items.push({ content: base, value: full, s1LoraName: full });
+  }
+  return items;
+}
+
+/** LiteGraph.ContextMenu values: folders as submenus, leaves carry the full path. */
+export function loraChooserMenuItems(names) {
+  return menuItemsFromLoraTree(buildLoraMenuTree(names));
+}
+
+export function newLoraRowFromPick(name) {
+  const picked = loraNameFromMenuValue(name).trim();
+  if (!isUsableLoraName(picked)) return null;
+  const row = blankLora();
+  row.name = picked;
+  row.enabled_default = true;
+  row.strength_model = 1;
+  row.strength_clip = 1;
+  return row;
+}
+
+/**
+ * Pure chooser result: cancel/None adds nothing; a pick appends a default-on
+ * strength 1.00 row; swap changes only the existing row's name.
+ */
+export function applyLoraChooserAction(loras, action, picked, index) {
+  const list = Array.isArray(loras) ? loras.map((entry) => ({ ...(entry || {}) })) : [];
+  const name = loraNameFromMenuValue(picked).trim();
+  if (action === "add") {
+    const row = newLoraRowFromPick(name);
+    if (!row) return { loras: list, changed: false };
+    list.push(row);
+    return { loras: list, changed: true, row };
+  }
+  if (action === "swap") {
+    if (!Number.isInteger(index) || index < 0 || index >= list.length) {
+      return { loras: list, changed: false };
+    }
+    if (!isUsableLoraName(name)) return { loras: list, changed: false };
+    if (list[index].name === name) return { loras: list, changed: false };
+    list[index].name = name;
+    return { loras: list, changed: true };
+  }
+  return { loras: list, changed: false };
 }
 
 function uniqueStrings(value) {

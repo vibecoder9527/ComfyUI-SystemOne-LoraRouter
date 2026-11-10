@@ -1,49 +1,55 @@
-// On-node LoRA Library rows, styled after rgthree Power Lora Loader.
-// library_json stays a hidden widget so old workflows serialize unchanged.
-// Vue Nodes 2.0 (Comfy.VueNodes.Enabled) is DOM-based: addDOMWidget is the
-// supported path. Canvas custom widgets are hosted in WidgetLegacy and have
-// known width/repaint issues, so they are only a fallback.
+// On-node LoRA Library rows. library_json stays a hidden widget so old
+// workflows serialize unchanged. Vue Nodes 2.0 uses addDOMWidget; canvas
+// custom widgets are a fallback only (known width/repaint limits).
+//
+// Add / rename uses a LiteGraph.ContextMenu chooser (className "dark" so
+// ComfyUI 1.57.6 Comfy.ContextMenuFilter adds type-to-filter when there
+// are more than four items), with folders nested as submenus. Cancelling
+// or picking a non-usable name adds no row.
 
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import {
+  applyLoraChooserAction,
   assignLoraIds,
   blankLora,
   collectGraphTags,
   commitModel,
+  isUsableLoraName,
+  loraChooserMenuItems,
+  loraNameFromMenuValue,
   loraNamesFromInfo,
   loraNamesFromModels,
+  newLoraRowFromPick,
   parseEditorDocument,
 } from "./s1_model.js";
+import { mountTagChips } from "./s1_tag_chips.js";
 
 const CSS = `
 .s1-lora-node { box-sizing: border-box; width: 100%; padding: 2px 0 6px; color: var(--fg-color, #ddd); font: 12px/1.3 system-ui, sans-serif; user-select: none; }
 .s1-lora-node * { box-sizing: border-box; }
 .s1-lora-head, .s1-lora-row { display: flex; align-items: center; gap: 6px; }
 .s1-lora-head { padding: 4px 10px 6px; opacity: 0.7; }
+.s1-lora-enable-col { width: 4.8em; flex: 0 0 4.8em; display: flex; align-items: center; }
 .s1-lora-head-label { flex: 1; min-width: 0; }
 .s1-lora-head-strength { width: 7.2em; text-align: center; }
 .s1-lora-head-tags { width: 9em; text-align: left; font-size: 11px; }
 .s1-lora-row { margin: 3px 8px; padding: 4px 8px; border-radius: 10px; background: rgba(0,0,0,0.28); border: 1px solid rgba(255,255,255,0.08); }
-.s1-lora-row.is-off { opacity: 0.45; }
 .s1-lora-toggle { width: 18px; height: 18px; border-radius: 50%; border: 2px solid rgba(255,255,255,0.55); background: transparent; padding: 0; cursor: pointer; flex: 0 0 18px; }
 .s1-lora-toggle.is-on { background: #3d9c66; border-color: #3d9c66; }
-.s1-lora-toggle.is-mixed { background: linear-gradient(90deg, #3d9c66 50%, transparent 50%); }
 .s1-lora-name { flex: 1; min-width: 4em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; text-align: left; background: none; border: 0; color: inherit; font: inherit; padding: 2px 0; }
 .s1-lora-name:hover { text-decoration: underline; }
-.s1-lora-info { width: 20px; height: 20px; border: 0; border-radius: 50%; background: rgba(255,255,255,0.08); color: inherit; cursor: pointer; font: 12px/20px Georgia, serif; padding: 0; }
 .s1-lora-str { display: flex; align-items: center; gap: 2px; width: 7.2em; justify-content: center; flex: 0 0 7.2em; }
 .s1-lora-str button { width: 18px; height: 20px; border: 0; background: transparent; color: inherit; cursor: pointer; font-size: 12px; padding: 0; }
 .s1-lora-str input { width: 3.2em; text-align: center; background: transparent; border: 0; color: inherit; font: inherit; }
-.s1-lora-tags { width: 9em; flex: 0 0 9em; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.1); color: inherit; font: inherit; border-radius: 6px; padding: 3px 6px; }
+.s1-lora-tags { width: 9em; flex: 0 0 9em; min-width: 0; }
 .s1-lora-add { display: block; width: calc(100% - 16px); margin: 6px 8px 0; padding: 7px 8px; border-radius: 10px; border: 1px solid rgba(255,255,255,0.14); background: rgba(255,255,255,0.05); color: inherit; font: inherit; cursor: pointer; }
 .s1-lora-add:hover { background: rgba(255,255,255,0.1); }
-.s1-lora-menu, .s1-lora-pick, .s1-lora-info-pop { position: fixed; z-index: 99999; background: #2b2b2b; color: #eee; border: 1px solid #555; border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,0.4); padding: 4px; min-width: 180px; max-height: 280px; overflow: auto; }
+.s1-lora-menu, .s1-lora-pick { position: fixed; z-index: 99999; background: #2b2b2b; color: #eee; border: 1px solid #555; border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,0.4); padding: 4px; min-width: 220px; max-height: 320px; overflow: auto; }
 .s1-lora-menu button, .s1-lora-pick button { display: block; width: 100%; text-align: left; background: none; border: 0; color: inherit; font: 12px/1.5 system-ui, sans-serif; padding: 4px 8px; cursor: pointer; }
 .s1-lora-menu button:hover, .s1-lora-pick button:hover { background: #3d6ea8; }
-.s1-lora-info-pop { padding: 10px 12px; max-width: 360px; font: 12px/1.45 system-ui, sans-serif; }
-.s1-lora-info-pop dt { opacity: 0.65; }
-.s1-lora-info-pop dd { margin: 0 0 6px; word-break: break-all; }
+.s1-lora-pick input { width: 100%; margin-bottom: 4px; background: #1a1a1a; color: inherit; border: 1px solid #555; border-radius: 4px; padding: 4px 6px; }
+.s1-lora-pick .s1-lora-folder { font-weight: 600; opacity: 0.75; padding: 4px 8px; }
 `;
 
 let styleInjected = false;
@@ -100,10 +106,6 @@ function fmtStrength(value) {
   return number.toFixed(2);
 }
 
-function parseTags(text) {
-  return String(text || "").split(/[\s,]+/).map((item) => item.trim()).filter(Boolean);
-}
-
 let loraNamesCache = { status: "idle", names: [] };
 
 async function loadLoraNames() {
@@ -138,16 +140,24 @@ async function loadLoraNames() {
   return [];
 }
 
+function liteGraph() {
+  return (typeof LiteGraph !== "undefined" && LiteGraph)
+    || (typeof globalThis !== "undefined" && globalThis.LiteGraph)
+    || app?.LiteGraph
+    || null;
+}
+
 function closePopups() {
-  document.querySelectorAll(".s1-lora-menu, .s1-lora-pick, .s1-lora-info-pop").forEach((el) => el.remove());
+  if (typeof document === "undefined") return;
+  document.querySelectorAll(".s1-lora-menu, .s1-lora-pick").forEach((el) => el.remove());
 }
 
 function placePopup(el, event) {
   document.body.appendChild(el);
-  const x = event.clientX ?? 80;
-  const y = event.clientY ?? 80;
-  el.style.left = `${Math.min(x, window.innerWidth - 220)}px`;
-  el.style.top = `${Math.min(y, window.innerHeight - 200)}px`;
+  const x = event?.clientX ?? 80;
+  const y = event?.clientY ?? 80;
+  el.style.left = `${Math.min(x, window.innerWidth - 240)}px`;
+  el.style.top = `${Math.min(y, window.innerHeight - 220)}px`;
   const close = (evt) => {
     if (el.contains(evt.target)) return;
     el.remove();
@@ -156,35 +166,48 @@ function placePopup(el, event) {
   setTimeout(() => document.addEventListener("mousedown", close, true), 0);
 }
 
-function showChooser(event, names, onPick) {
+function showFallbackChooser(event, names, onPick) {
   closePopups();
   const box = document.createElement("div");
   box.className = "s1-lora-pick";
   const filter = document.createElement("input");
   filter.placeholder = "Filter LoRAs…";
-  filter.style.cssText = "width:100%;margin-bottom:4px;background:#1a1a1a;color:inherit;border:1px solid #555;border-radius:4px;padding:4px 6px;";
   const list = document.createElement("div");
   const render = () => {
     const q = filter.value.trim().toLowerCase();
     list.replaceChildren();
-    const matches = names.filter((name) => !q || String(name).toLowerCase().includes(q)).slice(0, 200);
+    const matches = (names || []).filter((name) => !q || String(name).toLowerCase().includes(q));
     if (!matches.length) {
       const empty = document.createElement("div");
-      empty.textContent = names.length ? "No matches." : "No LoRA names from this ComfyUI (check /models/loras).";
+      empty.textContent = names?.length ? "No matches." : "No LoRA names from this ComfyUI (check /models/loras).";
       empty.style.padding = "6px 8px";
       list.append(empty);
       return;
     }
-    for (const name of matches) {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.textContent = name;
-      button.addEventListener("click", () => {
-        onPick(name);
-        box.remove();
-      });
-      list.append(button);
-    }
+    const items = loraChooserMenuItems(matches);
+    const paint = (entries, into) => {
+      for (const entry of entries) {
+        if (entry.has_submenu) {
+          const label = document.createElement("div");
+          label.className = "s1-lora-folder";
+          label.textContent = entry.content;
+          into.append(label);
+          paint(entry.submenu?.options || [], into);
+        } else {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.textContent = entry.content;
+          button.title = entry.s1LoraName || entry.value || entry.content;
+          button.addEventListener("click", () => {
+            const picked = loraNameFromMenuValue(entry);
+            if (isUsableLoraName(picked)) onPick(picked);
+            box.remove();
+          });
+          into.append(button);
+        }
+      }
+    };
+    paint(items, list);
   };
   filter.addEventListener("input", render);
   box.append(filter, list);
@@ -193,24 +216,28 @@ function showChooser(event, names, onPick) {
   filter.focus();
 }
 
-function showInfo(event, entry) {
-  closePopups();
-  const box = document.createElement("div");
-  box.className = "s1-lora-info-pop";
-  box.innerHTML = `<dl>
-    <dt>lora_id</dt><dd></dd>
-    <dt>name</dt><dd></dd>
-    <dt>strength (model &amp; clip)</dt><dd></dd>
-    <dt>enabled_default</dt><dd></dd>
-    <dt>tags</dt><dd></dd>
-  </dl>`;
-  const dds = box.querySelectorAll("dd");
-  dds[0].textContent = entry.lora_id || "";
-  dds[1].textContent = entry.name || "";
-  dds[2].textContent = fmtStrength(entry.strength_model ?? entry.strength ?? 1);
-  dds[3].textContent = entry.enabled_default === false ? "false" : "true";
-  dds[4].textContent = Array.isArray(entry.tags) ? entry.tags.join(", ") : "";
-  placePopup(box, event);
+export function showLoraChooser(event, names, onPick) {
+  const LG = liteGraph();
+  const items = loraChooserMenuItems(names);
+  const callback = (value) => {
+    const picked = loraNameFromMenuValue(value);
+    if (isUsableLoraName(picked)) onPick(picked);
+  };
+  if (LG && typeof LG.ContextMenu === "function") {
+    const scale = Math.max(1, app?.canvas?.ds?.scale ?? 1);
+    // className "dark" + more than 4 items: Comfy.ContextMenuFilter in frontend
+    // 1.57.6 injects the type-to-filter search box.
+    new LG.ContextMenu(items.length ? items : [{ content: "No LoRAs found", disabled: true }], {
+      event,
+      title: "Choose a lora",
+      scale,
+      className: "dark",
+      callback,
+    });
+    return { style: "litegraph" };
+  }
+  showFallbackChooser(event, names, onPick);
+  return { style: "fallback" };
 }
 
 function showRowMenu(event, node, index) {
@@ -249,15 +276,6 @@ function showRowMenu(event, node, index) {
   placePopup(box, event);
 }
 
-function allEnabledState(loras) {
-  if (!loras.length) return false;
-  const on = loras.every((row) => row.enabled_default !== false);
-  const off = loras.every((row) => row.enabled_default === false);
-  if (on) return true;
-  if (off) return false;
-  return null;
-}
-
 function renderLibrary(node) {
   const host = node.__s1LoraHost;
   if (!host) return;
@@ -269,46 +287,40 @@ function renderLibrary(node) {
 
   const head = document.createElement("div");
   head.className = "s1-lora-head";
-  const allState = allEnabledState(loras);
-  const allToggle = document.createElement("button");
-  allToggle.type = "button";
-  allToggle.className = "s1-lora-toggle" + (allState === true ? " is-on" : allState === null ? " is-mixed" : "");
-  allToggle.title = "Toggle All";
-  allToggle.addEventListener("click", () => {
-    const next = allState !== true;
-    for (const row of loras) row.enabled_default = next;
-    writeLibrary(node, model);
-    renderLibrary(node);
-  });
-  const allLabel = document.createElement("div");
-  allLabel.className = "s1-lora-head-label";
-  allLabel.textContent = "Toggle All";
+  const enableTitle = document.createElement("div");
+  enableTitle.className = "s1-lora-enable-col";
+  enableTitle.textContent = "預設啟用";
+  const nameTitle = document.createElement("div");
+  nameTitle.className = "s1-lora-head-label";
   const strengthTitle = document.createElement("div");
   strengthTitle.className = "s1-lora-head-strength";
   strengthTitle.textContent = "Strength";
   const tagsTitle = document.createElement("div");
   tagsTitle.className = "s1-lora-head-tags";
   tagsTitle.textContent = "Tags";
-  head.append(allToggle, allLabel, strengthTitle, tagsTitle);
+  head.append(enableTitle, nameTitle, strengthTitle, tagsTitle);
   host.append(head);
 
   loras.forEach((entry, index) => {
     const row = document.createElement("div");
-    row.className = "s1-lora-row" + (entry.enabled_default === false ? " is-off" : "");
+    row.className = "s1-lora-row";
     row.addEventListener("contextmenu", (event) => {
       event.preventDefault();
       showRowMenu(event, node, index);
     });
 
+    const enableCol = document.createElement("div");
+    enableCol.className = "s1-lora-enable-col";
     const toggle = document.createElement("button");
     toggle.type = "button";
     toggle.className = "s1-lora-toggle" + (entry.enabled_default === false ? "" : " is-on");
-    toggle.title = "enabled_default";
+    toggle.title = "enabled_default (off means not applied by default; tag hits still apply)";
     toggle.addEventListener("click", () => {
       entry.enabled_default = entry.enabled_default === false;
       writeLibrary(node, model);
       renderLibrary(node);
     });
+    enableCol.append(toggle);
 
     const name = document.createElement("button");
     name.type = "button";
@@ -317,19 +329,13 @@ function renderLibrary(node) {
     name.title = entry.name || "Click to pick a LoRA";
     name.addEventListener("click", async (event) => {
       const names = await loadLoraNames();
-      showChooser(event, names, (picked) => {
-        entry.name = picked;
-        writeLibrary(node, model);
+      showLoraChooser(event, names, (picked) => {
+        const result = applyLoraChooserAction(model.loras, "swap", picked, index);
+        model.loras = result.loras;
+        if (result.changed) writeLibrary(node, model);
         renderLibrary(node);
       });
     });
-
-    const info = document.createElement("button");
-    info.type = "button";
-    info.className = "s1-lora-info";
-    info.textContent = "i";
-    info.title = "Info";
-    info.addEventListener("click", (event) => showInfo(event, entry));
 
     const strengthBox = document.createElement("div");
     strengthBox.className = "s1-lora-str";
@@ -375,23 +381,24 @@ function renderLibrary(node) {
     });
     strengthBox.append(dec, val, inc);
 
-    const tagsInput = document.createElement("input");
-    tagsInput.className = "s1-lora-tags";
-    tagsInput.setAttribute("list", listId);
-    tagsInput.placeholder = "tags";
-    tagsInput.value = Array.isArray(entry.tags) ? entry.tags.join(", ") : "";
-    tagsInput.addEventListener("change", () => {
-      entry.tags = parseTags(tagsInput.value);
-      writeLibrary(node, model);
-    });
+    const tagsWrap = document.createElement("div");
+    tagsWrap.className = "s1-lora-tags";
+    tagsWrap.append(mountTagChips({
+      tags: entry.tags || [],
+      suggestions: tags,
+      listId,
+      onChange: (next) => {
+        entry.tags = next;
+        writeLibrary(node, model);
+      },
+    }));
 
-    row.append(toggle, name, info, strengthBox, tagsInput);
+    row.append(enableCol, name, strengthBox, tagsWrap);
     host.append(row);
   });
 
   const datalist = document.createElement("datalist");
   datalist.id = listId;
-  datalist.replaceChildren();
   for (const tag of tags) {
     const option = document.createElement("option");
     option.value = tag;
@@ -405,15 +412,12 @@ function renderLibrary(node) {
   add.textContent = "＋ Add Lora";
   add.addEventListener("click", async (event) => {
     const names = await loadLoraNames();
-    const create = (name) => {
-      const row = blankLora();
-      if (name) row.name = name;
-      model.loras.push(row);
-      writeLibrary(node, model);
+    showLoraChooser(event, names, (picked) => {
+      const result = applyLoraChooserAction(model.loras, "add", picked);
+      model.loras = result.loras;
+      if (result.changed) writeLibrary(node, model);
       renderLibrary(node);
-    };
-    if (names.length) showChooser(event, names, create);
-    else create("");
+    });
   });
   host.append(add);
 
@@ -451,7 +455,6 @@ export function installLoraLibraryNode(node) {
       draw() {},
       computeSize: () => [420, (readLibrary(node).loras || []).length * 40 + 80],
     });
-    // Without addDOMWidget the HTML host is attached after the node element if possible.
     const attach = () => {
       const el = node.vueHost || node.container || null;
       if (el && !host.isConnected) el.append(host);

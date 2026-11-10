@@ -30,14 +30,15 @@ import {
   compactOptionOutputs,
 } from "./s1_model.js";
 import { installLoraLibraryNode } from "./s1_lora_node.js";
+import { installThemeNode } from "./s1_theme_node.js";
 
 const BUTTON_NAME = "Open visual editor";
 const BUTTON_LABEL = "Open visual editor";
 
 const NODE_SPECS = {
   S1LoraLibrary: { kind: "lora", widget: "library_json", title: "LoRA Library", modal: false },
-  S1ThemeRoot: { kind: "theme", widget: "theme_json", title: "Theme Root", modal: true },
-  S1Theme: { kind: "theme", widget: "theme_json", title: "Theme", modal: true },
+  S1ThemeRoot: { kind: "theme", widget: "theme_json", title: "Theme Root", modal: false },
+  S1Theme: { kind: "theme", widget: "theme_json", title: "Theme", modal: false },
 };
 
 const FACTORIES = {
@@ -1512,6 +1513,7 @@ app.registerExtension({
   nodeCreated(node) {
     attachButton(node);
     installLoraLibraryNode(node);
+    installThemeNode(node);
     installCollectNode(node);
     if (!isThemeNode(node)) return;
     orderThemePromptInputs(node);

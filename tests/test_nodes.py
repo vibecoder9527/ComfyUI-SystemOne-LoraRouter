@@ -66,6 +66,19 @@ import {
   expandOptionOutputs,
   compactOptionOutputs,
   REPORT_OUTPUT_INDEX,
+  optionDisplayOrder,
+  addThemeOption,
+  deleteThemeOption,
+  moveThemeOption,
+  tokenizeTags,
+  addTagToken,
+  removeTagToken,
+  tagsToCommaString,
+  buildLoraMenuTree,
+  loraChooserMenuItems,
+  applyLoraChooserAction,
+  newLoraRowFromPick,
+  isUsableLoraName,
 } from "./js/s1_model.js";
 
 function assert(cond, message) {
@@ -621,6 +634,98 @@ const tags = collectGraphTags({
   ],
 });
 assert(tags.join(",") === "bikini,style,other", "graph tags are unique and ordered");
+
+// Theme display order: None last even when option_2 sits in the middle.
+const midNoneModel = {
+  none_option_id: "option_2",
+  options: [
+    { option_id: "option_1", label: "bikini", description: "bikini", tags: ["bikini"] },
+    { option_id: "option_2", label: "None", description: "以上皆非", tags: [] },
+    { option_id: "option_3", label: "foo", description: "foo", tags: ["style"] },
+  ],
+};
+const displayed = optionDisplayOrder(midNoneModel.options, midNoneModel.none_option_id);
+assert(displayed.map((option) => option.option_id).join(",") === "option_1,option_3,option_2", "None is last in display order");
+assert(midNoneModel.options[1].option_id === "option_2", "display order does not rewrite the array");
+
+const grown = addThemeOption(JSON.parse(JSON.stringify(midNoneModel)));
+assert(grown.ok && grown.option.option_id === "option_4", "new option gets the next free id");
+assert(grown.model.none_option_id === "option_2" && grown.model.options[1].option_id === "option_2", "adding keeps None id and index");
+assert(grown.model.options[3].option_id === "option_4", "new option is appended after existing slots");
+assert(optionDisplayOrder(grown.model.options, grown.model.none_option_id).map((option) => option.option_id).join(",") === "option_1,option_3,option_4,option_2", "new option appears before None");
+
+const refused = deleteThemeOption(JSON.parse(JSON.stringify(midNoneModel)), "option_2");
+assert(!refused.ok, "None cannot be deleted");
+const deleted = deleteThemeOption(JSON.parse(JSON.stringify(midNoneModel)), "option_1");
+assert(deleted.ok && deleted.model.options.map((option) => option.option_id).join(",") === "option_2,option_3", "deleting a user option keeps None id");
+const unmoved = moveThemeOption(JSON.parse(JSON.stringify(midNoneModel)), "option_2", -1);
+assert(!unmoved.ok || unmoved.moved === false, "None cannot be moved");
+const shifted = moveThemeOption(JSON.parse(JSON.stringify(midNoneModel)), "option_3", -1);
+assert(shifted.ok && shifted.moved && shifted.model.options.map((option) => option.option_id).join(",") === "option_3,option_2,option_1", "move swaps non-None slots and leaves None in place");
+
+const midNode = {
+  id: 21,
+  widgets: [{ name: "theme_json", value: JSON.stringify(midNoneModel) }],
+  outputs: [
+    { name: "bikini (option_1)", type: "S1_DECISION", links: [41], s1OptionId: "option_1" },
+    { name: "None (option_2)", type: "S1_DECISION", links: [42], s1OptionId: "option_2" },
+    { name: "foo (option_3)", type: "S1_DECISION", links: [43], s1OptionId: "option_3" },
+  ],
+  graph: {
+    links: {
+      41: { id: 41, origin_id: 21, origin_slot: 0, target_id: 22, target_slot: 0, type: "S1_DECISION" },
+      42: { id: 42, origin_id: 21, origin_slot: 1, target_id: 22, target_slot: 1, type: "S1_DECISION" },
+      43: { id: 43, origin_id: 21, origin_slot: 2, target_id: 22, target_slot: 2, type: "S1_DECISION" },
+    },
+  },
+};
+compactOptionOutputs(midNode, "option_2");
+assert(midNode.outputs.map((output) => output.s1OptionId || output.name).join(",") === "option_1,option_3,option_2,report_json", "compact shows None last among option sockets");
+assert(midNode.outputs[2].s1PromptIndex === 1 && midNode.graph.links[42].origin_slot === 2, "None keeps prompt index 1 and remaps the visual slot");
+assert(midNode.graph.links[41].origin_slot === 0 && midNode.graph.links[43].origin_slot === 1, "other option wires follow display order");
+expandOptionOutputs(midNode);
+assert(midNode.outputs.length === 33 && midNode.outputs[1].s1OptionId === "option_2", "expand restores None to prompt index 1");
+assert(midNode.graph.links[42].origin_slot === 1 && midNode.graph.links[43].origin_slot === 2, "expand restores backend origin slots");
+compactOptionOutputs(midNode, "option_2");
+assert(midNode.outputs[2].s1OptionId === "option_2" && midNode.graph.links[42].origin_slot === 2, "serialize/prompt roundtrip can compact again");
+
+assert(JSON.stringify(tokenizeTags("bikini, Bikini, style, , style")) === JSON.stringify(["bikini", "style"]), "tags trim and dedupe case-insensitively");
+assert(JSON.stringify(tokenizeTags(["foo", "bar", "foo"])) === JSON.stringify(["foo", "bar"]), "tag arrays dedupe");
+assert(JSON.stringify(addTagToken(["bikini"], " Bikini ")) === JSON.stringify(["bikini"]), "adding a duplicate is a no-op");
+assert(JSON.stringify(addTagToken(["bikini"], "style")) === JSON.stringify(["bikini", "style"]), "adding a new tag appends");
+assert(JSON.stringify(removeTagToken(["bikini", "style"], 1)) === JSON.stringify(["bikini"]), "removeTagToken drops by index");
+assert(tagsToCommaString(["bikini", "style"]) === "bikini, style", "tags serialize to a comma string");
+assert(JSON.stringify(tokenizeTags(tagsToCommaString(["a", "b"]))) === JSON.stringify(["a", "b"]), "comma string roundtrips");
+
+const tree = buildLoraMenuTree([
+  "root.safetensors",
+  "Anima/anima-turbo-lora-v0.2.safetensors",
+  "Anima/sub/nested.safetensors",
+  "Other/foo.safetensors",
+]);
+assert(tree.files.includes("root.safetensors"), "root files stay at the top level");
+assert(tree.folders.has("Anima") && tree.folders.get("Anima").files.some((name) => name.includes("anima-turbo")), "Anima folder holds its file");
+assert(tree.folders.get("Anima").folders.has("sub"), "nested folders are preserved");
+const menu = loraChooserMenuItems(["Anima/a.safetensors", "b.safetensors"]);
+assert(menu.some((item) => item.has_submenu && item.content.includes("Anima")), "menu nests folders as submenus");
+assert(menu.some((item) => item.s1LoraName === "b.safetensors"), "root files are leaves with the full path");
+const leaf = menu.find((item) => item.has_submenu).submenu.options[0];
+assert(leaf.s1LoraName === "Anima/a.safetensors", "folder leaves keep the full LoRA path");
+
+const start = [];
+const cancelled = applyLoraChooserAction(start, "add", "", 0);
+assert(!cancelled.changed && cancelled.loras.length === 0, "cancel / empty pick adds no row");
+assert(!applyLoraChooserAction(start, "add", "None").changed, "picking None adds no row");
+assert(!applyLoraChooserAction(start, "add", { content: "📁 Anima", has_submenu: true }).changed, "picking a folder adds no row");
+const picked = applyLoraChooserAction(start, "add", "Anima/anima-turbo-lora-v0.2.safetensors");
+assert(picked.changed && picked.loras.length === 1, "a pick adds one row");
+assert(picked.row.enabled_default === true && picked.row.strength_model === 1 && picked.row.strength_clip === 1, "new row defaults are on and 1.00");
+assert(picked.row.name === "Anima/anima-turbo-lora-v0.2.safetensors", "new row stores the full path");
+const swapped = applyLoraChooserAction(picked.loras, "swap", "Other/foo.safetensors", 0);
+assert(swapped.changed && swapped.loras[0].name === "Other/foo.safetensors", "swap changes only the name");
+assert(swapped.loras[0].strength_model === 1 && swapped.loras.length === 1, "swap does not add a row or reset extras");
+assert(!isUsableLoraName("None") && newLoraRowFromPick("None") === null, "None is not a usable LoRA pick");
+
 console.log("ok");
 """
 
@@ -1342,18 +1447,37 @@ class NodeTests(unittest.TestCase):
         if node is None:
             self.skipTest("node is not installed")
         self.assertIn("installLoraLibraryNode", editors)
+        self.assertIn("installThemeNode", editors)
         self.assertIn("compactOptionOutputs", editors)
         self.assertIn("expandOptionOutputs", editors)
         self.assertIn("modal: false", editors)
         lora_node = (ROOT / "js" / "s1_lora_node.js").read_text(encoding="utf-8")
         self.assertIn("addDOMWidget", lora_node)
-        self.assertIn("Toggle All", lora_node)
+        self.assertNotIn("Toggle All", lora_node)
+        self.assertIn("預設啟用", lora_node)
+        self.assertNotIn("s1-lora-info", lora_node)
+        self.assertNotIn("is-off", lora_node)
         self.assertIn("＋ Add Lora", lora_node)
+        self.assertIn("showLoraChooser", lora_node)
+        self.assertIn('className: "dark"', lora_node)
+        self.assertIn("LiteGraph", lora_node)
         self.assertIn("enabled_default", lora_node)
         self.assertIn("strength_clip = number", lora_node)
         self.assertIn("library_json", lora_node)
         self.assertIn("hideLibraryJsonWidget", lora_node)
-        for name in ("s1_editors.js", "s1_model.js", "s1_lora_node.js"):
+        self.assertIn("mountTagChips", lora_node)
+        theme_node = (ROOT / "js" / "s1_theme_node.js").read_text(encoding="utf-8")
+        self.assertIn("addDOMWidget", theme_node)
+        self.assertIn("Add option", theme_node)
+        self.assertIn("Description Here", theme_node)
+        self.assertIn("Tags (Comma)", theme_node)
+        self.assertIn("hideThemeJsonWidget", theme_node)
+        self.assertIn("mountTagChips", theme_node)
+        chips = (ROOT / "js" / "s1_tag_chips.js").read_text(encoding="utf-8")
+        self.assertIn("Enter", chips)
+        self.assertIn("Backspace", chips)
+        self.assertIn("×", chips)
+        for name in ("s1_editors.js", "s1_model.js", "s1_lora_node.js", "s1_theme_node.js", "s1_tag_chips.js"):
             checked = subprocess.run(
                 [node, "--check", str(ROOT / "js" / name)],
                 check=False,

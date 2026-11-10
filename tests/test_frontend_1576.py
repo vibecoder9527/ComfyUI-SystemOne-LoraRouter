@@ -22,8 +22,11 @@ def frontend_static():
         ]
     )
     for path in candidates:
-        if path.is_dir():
-            return path
+        try:
+            if path.is_dir():
+                return path
+        except OSError:
+            continue
     return None
 
 

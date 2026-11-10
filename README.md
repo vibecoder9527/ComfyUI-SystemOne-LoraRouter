@@ -120,3 +120,8 @@ Unittest discovers `tests/test_*.py`. It does not call SystemOne and does not ne
 - Old `lora_bindings` and per-binding strengths are not applied at runtime. See MIGRATION.
 - `apply_loras` is a no-op when ComfyUI is not importable.
 - There is no in-editor preview of a SystemOne answer.
+
+## On-node editors (Vue Nodes 2.0)
+
+Theme Root / Theme and LoRA Library draw their editors on the node (`addDOMWidget`). `theme_json` and `library_json` stay hidden widgets so saved workflows migrate losslessly. Theme options show None (以上皆非) last; existing `option_id` values and prompt indexes are kept (`s1PromptIndex` compact/expand). Tags use chip inputs (Enter or comma). Add Lora opens a LiteGraph context menu nested by folder; a row is added only after a pick (enabled_default on, strength 1.00).
+
