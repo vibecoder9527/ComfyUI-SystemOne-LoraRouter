@@ -21,6 +21,11 @@ import {
   loraNamesFromModels,
   parseEditorDocument,
   splitList,
+  ensureDefaultNoneOption,
+  isNoneLikeOption,
+  DEFAULT_NONE_LABEL,
+  collectGraphTags,
+  syncCollectInputs,
 } from "./s1_model.js";
 
 const BUTTON_NAME = "Open visual editor";
@@ -158,6 +163,24 @@ const CSS = `
   border-bottom: 1px solid #444;
 }
 .s1-editor-modal-host { flex: 1; min-height: 0; overflow: auto; }
+.s1-editor .s1-lora-row,
+.s1-editor .s1-option-row {
+  display: grid;
+  grid-template-columns: auto minmax(8em, 1.4fr) 5.5em minmax(7em, 1fr) auto;
+  gap: 6px;
+  align-items: end;
+}
+.s1-editor .s1-lora-row .s1-check { margin: 0; }
+.s1-editor .s1-lora-row .s1-field,
+.s1-editor .s1-option-row .s1-field { min-width: 0; }
+.s1-editor .s1-lora-row input[type="checkbox"] { width: auto; }
+.s1-editor .s1-strength { max-width: 6em; }
+@media (max-width: 700px) {
+  .s1-editor .s1-lora-row,
+  .s1-editor .s1-option-row {
+    grid-template-columns: auto 1fr;
+  }
+}
 `;
 
 const EMPTY_LORA_HINT =
@@ -577,14 +600,18 @@ function renderLoras() {
   state.model.loras.forEach((entry, index) => {
     const path = `loras.${index}`;
     const title = entry.lora_id ? `LoRA ${index + 1} · ${entry.lora_id}` : `LoRA ${index + 1}`;
-    const box = card(title, listButtons("loras", index, state.model.loras.length), [
-      readOnlyLine("lora_id", entry.lora_id || "", `${path}.lora_id`),
+    const row = el("div", "s1-lora-row");
+    row.append(
+      field("On", `${path}.enabled_default`, entry.enabled_default !== false, { check: true }),
       loraNameField(path, entry.name),
-      field("strength (model & clip)", `${path}.strength`, showNumber(displayedStrength(entry)), { decimal: true }),
-      field("tags", `${path}.tags`, (entry.tags || []).join(", "), { kind: "tags" }),
-      field("enabled_default", `${path}.enabled_default`, entry.enabled_default !== false, { check: true }),
-      hint("Checked: always apply. Unchecked: apply only when a selected tag overlaps."),
-    ]);
+      field("strength", `${path}.strength`, showNumber(displayedStrength(entry)), { decimal: true }),
+      tagField(`${path}.tags`, (entry.tags || []).join(", ")),
+      el("div", "s1-card-actions"),
+    );
+    const actions = row.querySelector(".s1-card-actions");
+    listButtons("loras", index, state.model.loras.length).forEach((btn) => actions.append(btn));
+    const box = card(title, [], [row]);
+    box.append(hint("On: always apply. Off: apply only when a selected tag overlaps. Strength writes both strength_model and strength_clip."));
     if (strengthsDiffer(entry)) {
       box.append(hint("strength_clip differs. The next valid write copies this strength to both strength_model and strength_clip."));
     }
@@ -596,34 +623,55 @@ function renderLoras() {
   bodyEl.append(button("Add LoRA", "add", { list: "loras", factory: "lora" }));
 }
 
-function noneField(theme) {
-  const ids = [];
-  for (const option of theme.options || []) {
-    if (option?.option_id && !ids.includes(option.option_id)) ids.push(option.option_id);
+function tagField(path, value) {
+  const wrap = field("tags", path, value, { kind: "tags" });
+  const input = wrap.querySelector("input, textarea");
+  if (input) {
+    const listId = `s1-tags-${path.replace(/[^A-Za-z0-9_-]/g, "-")}`;
+    input.setAttribute("list", listId);
+    const list = document.createElement("datalist");
+    list.id = listId;
+    const tags = collectGraphTags(state.node?.graph, state.node);
+    for (const tag of tags) {
+      const option = document.createElement("option");
+      option.value = tag;
+      list.append(option);
+    }
+    wrap.append(list);
   }
-  const current = theme.none_option_id || "";
-  const choices = [""].concat(ids);
-  if (current && !choices.includes(current)) choices.push(current);
-  return field("none_option_id", "none_option_id", current, { select: choices });
+  return wrap;
+}
+
+function noneField(theme) {
+  // none_option_id is assigned automatically and is not a form field.
+  // The default 以上皆非 row is rendered as a locked option instead.
+  return hint(`The last option is ${DEFAULT_NONE_LABEL}. It is selectable, has its own output slot, and contributes no tags.`);
 }
 
 function renderOption(option, index, length) {
   const path = `options.${index}`;
-  const title = option.option_id ? `Option ${index + 1} · ${option.option_id}` : `Option ${index + 1}`;
-  return card(title, listButtons("options", index, length), [
-    readOnlyLine("option_id", option.option_id || "", `${path}.option_id`),
-    field("label", `${path}.label`, option.label ?? ""),
-    field("description", `${path}.description`, option.description ?? "", { rows: 3 }),
-    field("tags", `${path}.tags`, (option.tags || []).join(", "), { kind: "tags" }),
-    hint("Selected options contribute these tags. The none option contributes none."),
-  ]);
+  const locked = Boolean(option?.option_id && option.option_id === state.model?.none_option_id) || isNoneLikeOption(option);
+  const title = option.option_id
+    ? (locked ? `${DEFAULT_NONE_LABEL} · ${option.option_id}` : `Option ${index + 1} · ${option.option_id}`)
+    : `Option ${index + 1}`;
+  const controls = locked ? [] : listButtons("options", index, length);
+  const fields = [
+    field("label", `${path}.label`, option.label ?? (locked ? DEFAULT_NONE_LABEL : "")),
+    field("description", `${path}.description`, option.description ?? "", { rows: 2 }),
+  ];
+  if (locked) {
+    fields.push(hint("This is the default none-of-the-above choice. It always has an output slot and contributes no tags."));
+  } else {
+    fields.push(tagField(`${path}.tags`, (option.tags || []).join(", ")));
+  }
+  return card(title, controls, fields);
 }
 
 function renderThemeFields() {
   const theme = state.model;
   bodyEl.append(
     hint(
-      "theme_id is the id stored on this node. It is read-only. New and duplicated themes receive the next free theme_N on the graph before queue. A saved non-empty id stays when it does not collide. option_id values stay read-only too, and existing option ids are kept.",
+      "theme_id and option_id are assigned automatically and shown in the card titles. They are not form fields. New and duplicated themes receive the next free theme_N on the graph before queue. A saved non-empty id stays when it does not collide. Existing option ids are kept. Decision sources still use those ids.",
     ),
   );
   bodyEl.append(
@@ -637,12 +685,10 @@ function renderThemeFields() {
     ),
   );
   const children = [
-    readOnlyLine("theme_id", theme.theme_id || "", "theme_id"),
     field("title", "title", theme.title ?? ""),
     field("instructions", "instructions", theme.instructions ?? "", { rows: 4 }),
     field("select_mode", "select_mode", theme.select_mode || "single", { select: SELECT_MODES }),
     noneField(theme),
-    hint("none must match an option id in this theme, or stay unset. There is no fallback option."),
   ];
   (theme.options || []).forEach((option, index) => {
     children.push(renderOption(option, index, theme.options.length));
@@ -778,6 +824,11 @@ function loadNode(node) {
     return;
   }
   state.model = parsed.model;
+  if (spec.kind === "theme") {
+    const before = JSON.stringify(state.model);
+    assignThemeDocument(state.model);
+    if (JSON.stringify(state.model) !== before) scheduleLiveWrite();
+  }
   state.clean = true;
   state.invalidPaths = [];
   announceThemeConflict(node);
@@ -940,7 +991,9 @@ function onClick(event) {
     const list = getByPath(root, target.dataset.list);
     const factory = FACTORIES[target.dataset.factory];
     if (Array.isArray(list) && factory) {
-      list.push(factory());
+      const noneIndex = list.findIndex((item) => item && (item.option_id === state.model?.none_option_id || isNoneLikeOption(item)));
+      if (target.dataset.list === "options" && noneIndex >= 0) list.splice(noneIndex, 0, factory());
+      else list.push(factory());
       if (state.kind === "lora") assignLoraIds(state.model);
       if (state.kind === "theme") assignThemeDocument(state.model);
     }
@@ -953,7 +1006,11 @@ function onClick(event) {
     const list = getByPath(root, target.dataset.list);
     const index = Number(target.dataset.index);
     if (!Array.isArray(list) || !Number.isInteger(index)) return;
-    if (act === "remove") list.splice(index, 1);
+    if (act === "remove") {
+      const item = list[index];
+      if (item && (item.option_id === state.model?.none_option_id || isNoneLikeOption(item))) return;
+      list.splice(index, 1);
+    }
     if (act === "up" && index > 0) list.splice(index - 1, 0, list.splice(index, 1)[0]);
     if (act === "down" && index < list.length - 1) list.splice(index + 1, 0, list.splice(index, 1)[0]);
     if (state.kind === "lora") assignLoraIds(state.model);
@@ -1212,8 +1269,17 @@ function applyThemePlan(nodes) {
   const plan = planThemeIds(entries);
   for (const assignment of plan.assignments) {
     const node = byKey.get(assignment.key);
-    if (!node || !assignment.changed || typeof assignment.themeJson !== "string") continue;
-    writeNamed(node, "theme_json", assignment.themeJson);
+    if (!node || typeof assignment.themeJson !== "string") continue;
+    let nextJson = assignment.themeJson;
+    const parsed = parseEditorDocument("theme", nextJson);
+    if (parsed.ok) {
+      const before = nextJson;
+      assignThemeDocument(parsed.model);
+      const committed = commitModel("theme", parsed.model);
+      if (committed.ok) nextJson = committed.json;
+      if (nextJson !== before) assignment.changed = true;
+    }
+    if (assignment.changed) writeNamed(node, "theme_json", nextJson);
   }
   const reasons = new Map();
   for (const conflict of plan.conflicts) {
@@ -1230,10 +1296,10 @@ function applyThemePlan(nodes) {
   return plan;
 }
 
-// Rename option sockets to match theme_json. Unused pads stay visible as "·".
-// Frontend 1.57.6 drops a wire when output.hidden is set or output.links is
-// rewritten, so relinkOptionSlots does neither. Invalid JSON leaves sockets
-// alone. This does not call reconcileThemeIds.
+// Rename option sockets to match theme_json. Unused pads with no live wire
+// are hidden. Frontend 1.57.6 drops a wire when a connected socket is hidden
+// or output.links is rewritten, so relinkOptionSlots never hides a live slot
+// and never assigns output.links. Invalid JSON leaves sockets alone.
 function syncOptionOutputs(node) {
   if (!isThemeNode(node)) return;
   orderThemePromptInputs(node);
@@ -1297,6 +1363,43 @@ function installQueueHooks() {
   wrap("graphToPrompt");
 }
 
+function isCollectNode(node) {
+  const name = node?.comfyClass || node?.constructor?.comfyClass || node?.type || "";
+  return name === "S1ThemeCollect";
+}
+
+function syncAllCollectInputs() {
+  const graphs = themeGroups().map((nodes) => nodes[0]?.graph).filter(Boolean);
+  const seen = new Set();
+  const visit = (graph) => {
+    if (!graph || seen.has(graph)) return;
+    seen.add(graph);
+    const nodes = graph._nodes || graph.nodes || [];
+    for (const node of nodes) {
+      if (isCollectNode(node)) {
+        syncCollectInputs(node);
+        node.graph?.setDirtyCanvas?.(true, true);
+      }
+      if (node?.subgraph) visit(node.subgraph);
+    }
+  };
+  if (app.graph) visit(app.graph);
+  for (const graph of graphs) visit(graph);
+}
+
+function installCollectNode(node) {
+  if (!isCollectNode(node) || node.__s1CollectHooked) return;
+  node.__s1CollectHooked = true;
+  const original = node.onConnectionsChange;
+  node.onConnectionsChange = function s1CollectConnectionsChange(...args) {
+    const result = typeof original === "function" ? original.apply(this, args) : undefined;
+    syncCollectInputs(this);
+    this.graph?.setDirtyCanvas?.(true, true);
+    return result;
+  };
+  syncCollectInputs(node);
+}
+
 app.registerExtension({
   name: "SystemOne.LoraRouter.UI",
   async setup() {
@@ -1316,6 +1419,7 @@ app.registerExtension({
     }
     restoredThisLoad.clear();
     reconcileThemeIds();
+    syncAllCollectInputs();
   },
   loadedGraphNode(node) {
     if (!isThemeNode(node)) return;
@@ -1324,6 +1428,7 @@ app.registerExtension({
   },
   nodeCreated(node) {
     attachButton(node);
+    installCollectNode(node);
     if (!isThemeNode(node)) return;
     orderThemePromptInputs(node);
     installThemeSerialize(node);

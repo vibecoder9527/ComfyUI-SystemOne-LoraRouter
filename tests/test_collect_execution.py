@@ -151,12 +151,12 @@ class CollectExecutionMixin:
         blocked = self.blocker_cls(None)
         with self.assertRaises(TYPES.SchemaError) as ctx:
             self.execute_map(self.collect, _inputs(a=blocked, b=blocked))
-        self.assertIn("a or b", str(ctx.exception))
+        self.assertIn("at least one input", str(ctx.exception))
 
     def test_no_inputs_raises(self):
         with self.assertRaises(TYPES.SchemaError) as ctx:
             self.execute_map(self.collect, {})
-        self.assertIn("a or b", str(ctx.exception))
+        self.assertIn("at least one input", str(ctx.exception))
 
     def test_two_live_branches_still_merge(self):
         out = self.execute_map(self.collect, _inputs(a=self.payload_a, b=self.payload_b))

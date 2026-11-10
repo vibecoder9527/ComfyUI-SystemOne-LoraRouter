@@ -1,0 +1,69 @@
+{
+  "84": {
+    "inputs": {
+      "library_json": "{\n  \"version\": 1,\n  \"loras\": [\n    {\n      \"lora_id\": \"lora_1\",\n      \"name\": \"Anima/anima-turbo-lora-v4.safetensors\",\n      \"strength_model\": 1,\n      \"strength_clip\": 1\n    },\n    {\n      \"lora_id\": \"lora_2\",\n      \"name\": \"Anima/slingshotAnima.safetensors\",\n      \"strength_model\": 1,\n      \"strength_clip\": 1,\n      \"tags\": [\n        \"bikini\"\n      ],\n      \"enabled_default\": false\n    }\n  ]\n}"
+    },
+    "class_type": "S1LoraLibrary",
+    "_meta": {
+      "title": "LoRA Library",
+      "ver": "49875a2241e3841cfefc69ff419d99751cccdc43"
+    }
+  },
+  "87:86": {
+    "inputs": {
+      "theme_json": "{\n  \"version\": 1,\n  \"theme_id\": \"theme_1\",\n  \"title\": \"Theme\",\n  \"instructions\": \"Choose the options that fit the prompt clothing.\",\n  \"select_mode\": \"single\",\n  \"options\": [\n    {\n      \"option_id\": \"option_1\",\n      \"label\": \"bikini\",\n      \"description\": \"bikini\",\n      \"tags\": [\n        \"bikini\"\n      ]\n    },\n    {\n      \"option_id\": \"option_2\",\n      \"label\": \"None\",\n      \"description\": \"Not on the list\"\n    }\n  ]\n}",
+      "positive": [
+        "60",
+        0
+      ],
+      "settings": [
+        "85",
+        0
+      ]
+    },
+    "class_type": "S1ThemeRoot",
+    "_meta": {
+      "title": "Theme Root",
+      "ver": "49875a2241e3841cfefc69ff419d99751cccdc43"
+    }
+  },
+  "87:88": {
+    "inputs": {
+      "a": [
+        "87:86",
+        0
+      ],
+      "b": [
+        "87:86",
+        1
+      ]
+    },
+    "class_type": "S1ThemeCollect",
+    "_meta": {
+      "title": "Theme Collect",
+      "ver": "49875a2241e3841cfefc69ff419d99751cccdc43"
+    }
+  },
+  "87:90": {
+    "inputs": {
+      "on_error": "raise",
+      "model": [
+        "44",
+        0
+      ],
+      "lora_lib": [
+        "84",
+        0
+      ],
+      "decision": [
+        "87:88",
+        0
+      ]
+    },
+    "class_type": "S1LoraAggregate",
+    "_meta": {
+      "title": "LoRA Aggregate",
+      "ver": "49875a2241e3841cfefc69ff419d99751cccdc43"
+    }
+  }
+}

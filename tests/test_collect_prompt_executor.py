@@ -17,7 +17,11 @@ from unittest.mock import Mock
 
 # This repo also has a product `nodes/` package. Put ComfyUI first.
 _COMFY_ROOT = Path(os.environ.get("COMFYUI_ROOT", "/root/ComfyUI"))
-if _COMFY_ROOT.is_dir():
+try:
+    _comfy_present = _COMFY_ROOT.is_dir()
+except OSError:
+    _comfy_present = False
+if _comfy_present:
     sys.path.insert(0, str(_COMFY_ROOT))
 
 from tests.harness import (

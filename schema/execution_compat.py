@@ -69,16 +69,31 @@ def _node_flag(obj: Any) -> bool:
     return cls.__dict__.get("IGNORE_OPTIONAL_EXECUTION_BLOCKERS", False) is True
 
 
-def _optional_input_names(obj: Any) -> set[str]:
+def _optional_input_names(obj: Any, input_data_all: Mapping[str, Any] | None = None) -> set[str]:
+    """Optional socket names, including extra dynamic keys not in INPUT_TYPES.
+
+    Required INPUT_TYPES keys stay required. Anything else present in
+    ``input_data_all`` is treated as optional so a frontend-added Collect
+    socket still gets the fail-closed optional-blocker filter.
+    """
+
     cls = obj if isinstance(obj, type) else type(obj)
     getter = getattr(cls, "INPUT_TYPES", None)
-    if getter is None:
-        return set()
-    types = getter() if callable(getter) else getter
-    if not isinstance(types, Mapping):
-        return set()
-    optional = types.get("optional") or {}
-    return set(optional.keys()) if isinstance(optional, Mapping) else set()
+    declared_optional: set[str] = set()
+    required: set[str] = set()
+    if getter is not None:
+        types = getter() if callable(getter) else getter
+        if isinstance(types, Mapping):
+            optional = types.get("optional") or {}
+            if isinstance(optional, Mapping):
+                declared_optional = set(optional.keys())
+            req = types.get("required") or {}
+            if isinstance(req, Mapping):
+                required = set(req.keys())
+    extra = set()
+    if input_data_all:
+        extra = set(input_data_all.keys()) - required
+    return declared_optional | extra
 
 
 def _comfy_blocker_class() -> type | None:
@@ -160,7 +175,7 @@ def drop_optional_execution_blockers(
         return input_data_all
     if blocker_cls is None:
         blocker_cls = _comfy_blocker_class()
-    optional = _optional_input_names(obj)
+    optional = _optional_input_names(obj, input_data_all)
     if not optional:
         return input_data_all
     input_is_list = bool(getattr(obj, "INPUT_IS_LIST", False))

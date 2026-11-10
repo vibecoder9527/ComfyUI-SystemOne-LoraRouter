@@ -19,12 +19,15 @@ from tests.harness import (
     PKG,
     ROOT,
     TYPES,
+    CountingClient,
     FakeHTTPResponse,
+    as_payload,
     canned_urlopen,
     lora_entries,
     option,
     payload_from_request,
     read_example,
+    run_theme,
     theme_doc,
 )
 
@@ -55,6 +58,11 @@ import {
   relinkOptionSlots,
   orderThemePromptInputs,
   MAX_OPTION_OUTPUTS,
+  ensureDefaultNoneOption,
+  isNoneLikeOption,
+  DEFAULT_NONE_LABEL,
+  syncCollectInputs,
+  collectGraphTags,
 } from "./js/s1_model.js";
 
 function assert(cond, message) {
@@ -428,7 +436,8 @@ const siblingSync = relinkOptionSlots(sibling, planned.slots);
 assert(siblingSync.dropped === 0, "an unused sibling pad does not drop a live option wire");
 assert(sibling.graph.links[21].origin_slot === 0, "selected slot stays linked");
 assert(sibling.outputs[0].hidden === false && sibling.outputs[0].links.includes(21), "live option stays visible");
-assert(sibling.outputs[2].hidden === false && sibling.outputs[2].name === "·", "unused pad stays visible");
+assert(sibling.outputs[2].hidden === true && sibling.outputs[2].name === "·", "unused unconnected pad is hidden");
+assert(sibling.graph.links[21].origin_slot === 0 && sibling.outputs[0].links.includes(21), "hiding a pad does not drop a live option wire");
 
 const livePad = {
   id: 13,
@@ -468,7 +477,7 @@ assert(linksOnlySync.first === true && linksOnlySync.dropped === 0 && linksOnlyS
 assert(linksOnly.outputs[0].hidden === false && linksOnly.outputs[0].s1OptionId === "anime", "map wire keeps the socket");
 assert(linksOnly.outputs[0].links === null, "first sync does not rewrite a null links mirror");
 assert(linksOnly.graph.links.get(30).originSlot === 0, "map link stays on the option");
-assert(linksOnly.outputs[2].hidden === false && linksOnly.outputs[2].name === "·", "unlinked pad is visible");
+assert(linksOnly.outputs[2].hidden === true && linksOnly.outputs[2].name === "·", "unlinked pad is hidden");
 
 class StoreOutput {
   constructor(name, optionId, ids) {
@@ -540,6 +549,53 @@ assert(prompts.graph.links[3].target_slot === 1, "negative link follows the sock
 assert(prompts.graph.links[2].target_slot === 2, "settings link remapped");
 const againOrder = orderThemePromptInputs(prompts);
 assert(againOrder.moved === false, "second prompt order pass is a no-op");
+
+const reused = ensureDefaultNoneOption({
+  options: [
+    { option_id: "option_1", label: "bikini", description: "bikini", tags: ["bikini"] },
+    { option_id: "option_2", label: "None", description: "Not on the list" },
+  ],
+});
+assert(reused.reused === true && reused.added === false, "user None option is reused");
+assert(reused.model.none_option_id === "option_2", "none_option_id points at existing None");
+assert(reused.model.options.length === 2, "reused none does not add a slot");
+
+const added = ensureDefaultNoneOption({
+  options: [{ option_id: "option_1", label: "bikini", description: "bikini", tags: ["bikini"] }],
+});
+assert(added.added === true && added.model.options.length === 2, "default none is appended");
+assert(added.model.options[0].option_id === "option_1", "append keeps the first slot");
+assert(added.model.none_option_id === "none" && added.model.options[1].label === DEFAULT_NONE_LABEL, "appended 以上皆非");
+assert(isNoneLikeOption({ label: "None", description: "Not on the list" }), "None / Not on the list is none-like");
+
+const collectNode = {
+  id: 90,
+  inputs: [
+    { name: "a", type: "S1_DECISION", link: 1 },
+    { name: "b", type: "S1_DECISION", link: 2 },
+  ],
+  graph: {
+    links: {
+      1: { id: 1, origin_id: 1, origin_slot: 0, target_id: 90, target_slot: 0 },
+      2: { id: 2, origin_id: 1, origin_slot: 1, target_id: 90, target_slot: 1 },
+    },
+  },
+};
+const collectSync = syncCollectInputs(collectNode);
+assert(collectSync.ok, "collect sync ok");
+assert(collectNode.inputs[0].name === "a" && collectNode.inputs[0].hidden === false, "a stays visible");
+assert(collectNode.inputs[1].name === "b" && collectNode.inputs[1].hidden === false, "b stays visible");
+assert(collectNode.inputs[2].name === "c" && collectNode.inputs[2].hidden === false, "empty c appears");
+assert(collectNode.inputs[3].hidden === true, "later collect pads hide");
+assert(collectNode.graph.links[1].target_slot === 0 && collectNode.graph.links[2].target_slot === 1, "collect wires stay");
+
+const tags = collectGraphTags({
+  _nodes: [
+    { type: "S1LoraLibrary", widgets: [{ name: "library_json", value: JSON.stringify({ loras: [{ tags: ["bikini", "style"] }] }) }] },
+    { type: "S1ThemeRoot", widgets: [{ name: "theme_json", value: JSON.stringify({ options: [{ tags: ["bikini", "other"] }] }) }] },
+  ],
+});
+assert(tags.join(",") === "bikini,style,other", "graph tags are unique and ordered");
 console.log("ok");
 """
 
@@ -695,7 +751,9 @@ class NodeTests(unittest.TestCase):
         self.assertEqual(collect.RETURN_TYPES, ("S1_DECISION",))
         self.assertEqual(collect.RETURN_NAMES, ("decision",))
         self.assertEqual(list(collect.INPUT_TYPES()["required"]), [])
-        self.assertEqual(list(collect.INPUT_TYPES()["optional"]), ["a", "b"])
+        self.assertEqual(list(collect.INPUT_TYPES()["optional"])[:2], ["a", "b"])
+        self.assertEqual(len(collect.INPUT_TYPES()["optional"]), 16)
+        self.assertEqual(list(collect.INPUT_TYPES()["optional"])[2], "c")
         self.assertEqual(collect.INPUT_TYPES()["optional"]["a"][0], "S1_DECISION")
         self.assertTrue(collect.INPUT_TYPES()["optional"]["a"][1]["forceInput"])
         self.assertTrue(collect.INPUT_TYPES()["optional"]["b"][1]["forceInput"])
@@ -805,26 +863,28 @@ class NodeTests(unittest.TestCase):
             1,
         )
 
-        left = root.decide(
-            positive="",
-            negative="",
-            settings=settings,
-            theme_json=json.dumps(theme_doc(theme_id="left", options=[option("a", ["ta"])])),
-        )
-        right = root.decide(
-            positive="",
-            negative="",
-            settings=settings,
-            theme_json=json.dumps(theme_doc(theme_id="right", options=[option("b", ["tb"])])),
-        )
+        with mock.patch("urllib.request.urlopen", side_effect=urlopen):
+            left = root.decide(
+                positive="",
+                negative="",
+                settings=settings,
+                theme_json=json.dumps(theme_doc(theme_id="left", options=[option("a", ["ta"])])),
+            )
+            right = root.decide(
+                positive="",
+                negative="",
+                settings=settings,
+                theme_json=json.dumps(theme_doc(theme_id="right", options=[option("b", ["tb"])])),
+            )
         (merged,) = collect.merge(left[0], right[0])
         self.assertEqual([item.theme_id for item in merged.result.decisions], ["left", "right"])
 
-        omitted = root.decide(
-            positive="p",
-            settings=settings,
-            theme_json=json.dumps(theme_doc(theme_id="omit_neg", options=[option("a", ["ta"])])),
-        )
+        with mock.patch("urllib.request.urlopen", side_effect=urlopen):
+            omitted = root.decide(
+                positive="p",
+                settings=settings,
+                theme_json=json.dumps(theme_doc(theme_id="omit_neg", options=[option("a", ["ta"])])),
+            )
         self.assertEqual(omitted[0].slot_option_id, "a")
         self.assertEqual(omitted[0].result.tags, ["ta"])
         (only_a,) = collect.merge(art[0])
@@ -837,7 +897,7 @@ class NodeTests(unittest.TestCase):
         self.assertIs(blocked_first, pack[0])
         with self.assertRaises(TYPES.SchemaError) as collect_empty:
             collect.merge()
-        self.assertIn("a or b", str(collect_empty.exception))
+        self.assertIn("at least one input", str(collect_empty.exception))
         with self.assertRaises(TYPES.SchemaError):
             collect.merge(realistic, art[3])
 
@@ -849,8 +909,10 @@ class NodeTests(unittest.TestCase):
                 theme_json=read_example("theme.empty.json"),
             )
         empty_call.assert_not_called()
-        self.assertTrue(all(BLOCKER.is_execution_blocker(item) for item in empty[:-1]))
-        self.assertIn("no option slots", empty[-1])
+        self.assertEqual(empty[0].slot_option_id, "none")
+        self.assertEqual(empty[0].emitted_reason, "selected")
+        self.assertEqual(empty[0].result.tags, [])
+        self.assertTrue(all(BLOCKER.is_execution_blocker(item) for item in empty[1:-1]))
         self.assertNotIn(secret, empty[-1])
 
         with mock.patch("urllib.request.urlopen") as bad_json:
@@ -899,13 +961,23 @@ class NodeTests(unittest.TestCase):
         self.assertEqual(none_slot.result.tags, [])
         self.assertNotIn("should_not_apply", none_slot.result.tags)
         self.assertTrue(BLOCKER.is_execution_blocker(art[0]))
-        followed = child.decide(
-            positive="still here",
-            negative="",
-            settings=settings,
-            theme_json=json.dumps(theme_doc(theme_id="after_none", options=[option("only", ["extra"])])),
-            upstream=none_slot,
-        )
+        def only_choice(req, timeout=None):
+            body = payload_from_request(req)
+            answers = {
+                qid: {"choice": "only", "confidence": 1}
+                for qid, question in body["questions"].items()
+                if question["type"] == "choice"
+            }
+            return FakeHTTPResponse({"answers": answers})
+
+        with mock.patch("urllib.request.urlopen", side_effect=only_choice):
+            followed = child.decide(
+                positive="still here",
+                negative="",
+                settings=settings,
+                theme_json=json.dumps(theme_doc(theme_id="after_none", options=[option("only", ["extra"])])),
+                upstream=none_slot,
+            )
         self.assertEqual(followed[0].result.tags, ["extra"])
         self.assertEqual(followed[0].result.get("art_style").selected, ["none"])
 
@@ -933,7 +1005,8 @@ class NodeTests(unittest.TestCase):
         self.assertEqual(passed[1].emitted_reason, "passthrough_error")
         self.assertIs(passed[0].result, passed[1].result)
         self.assertEqual(passed[0].result.tags, [])
-        self.assertTrue(BLOCKER.is_execution_blocker(passed[2]))
+        self.assertEqual(passed[2].emitted_reason, "passthrough_error")
+        self.assertTrue(BLOCKER.is_execution_blocker(passed[3]))
         self.assertTrue(any("passthrough" in note for note in json.loads(passed[-1])["notes"]))
 
         with mock.patch("urllib.request.urlopen", side_effect=bad_choice):
@@ -996,13 +1069,11 @@ class NodeTests(unittest.TestCase):
             node.apply(model, "nope", "nope", on_error="raise")
 
         library = lora_entries({"lora_id": "L", "name": "missing.safetensors", "tags": ["only_tag"]})
-        theme = PKG.NODE_CLASS_MAPPINGS["S1ThemeRoot"]()
-        result = theme.decide(
-            positive="",
-            negative="",
-            settings=self._settings(api_key=""),
-            theme_json=json.dumps(theme_doc(options=[option("only", ["only_tag"])])),
+        outcome = run_theme(
+            theme_json=theme_doc(options=[option("only", ["only_tag"])]),
+            client=CountingClient(),
         )
+        result = (as_payload(outcome.result, slot_option_id="only"),)
 
         def missing_api():
             return (
@@ -1090,29 +1161,40 @@ class NodeTests(unittest.TestCase):
             ["theme_1", "theme_2", "theme_3"],
         )
 
-        settings = self._settings(api_key="")
+        settings = self._settings(api_key="k")
         root = PKG.NODE_CLASS_MAPPINGS["S1ThemeRoot"]()
         child = PKG.NODE_CLASS_MAPPINGS["S1Theme"]()
-        first = root.decide(
-            positive="p",
-            negative="",
-            settings=settings,
-            theme_json=by_key["a"]["themeJson"],
-        )
-        second_out = child.decide(
-            positive="p",
-            negative="",
-            settings=settings,
-            theme_json=by_key["b"]["themeJson"],
-            upstream=first[0],
-        )
-        third = child.decide(
-            positive="p",
-            negative="",
-            settings=settings,
-            theme_json=by_key["c"]["themeJson"],
-            upstream=second_out[0],
-        )
+
+        def yes_choice(req, timeout=None):
+            body = payload_from_request(req)
+            answers = {
+                qid: {"choice": "yes", "confidence": 1}
+                for qid, question in body["questions"].items()
+                if question["type"] == "choice"
+            }
+            return FakeHTTPResponse({"answers": answers})
+
+        with mock.patch("urllib.request.urlopen", side_effect=yes_choice):
+            first = root.decide(
+                positive="p",
+                negative="",
+                settings=settings,
+                theme_json=by_key["a"]["themeJson"],
+            )
+            second_out = child.decide(
+                positive="p",
+                negative="",
+                settings=settings,
+                theme_json=by_key["b"]["themeJson"],
+                upstream=first[0],
+            )
+            third = child.decide(
+                positive="p",
+                negative="",
+                settings=settings,
+                theme_json=by_key["c"]["themeJson"],
+                upstream=second_out[0],
+            )
         result = third[0].result
         self.assertEqual(
             [item.theme_id for item in result.decisions],
@@ -1121,7 +1203,7 @@ class NodeTests(unittest.TestCase):
         self.assertTrue(all(item.status == "ok" for item in result.decisions))
         self.assertEqual([item.selected for item in result.decisions], [["yes"], ["yes"], ["yes"]])
         self.assertEqual(result.tags, ["ta", "tb", "tc"])
-        self.assertFalse(json.loads(first[-1])["api"]["called"])
+        self.assertTrue(json.loads(first[-1])["api"]["called"])
 
     def test_docs_describe_the_break(self):
         needles = (
@@ -1182,21 +1264,21 @@ class NodeTests(unittest.TestCase):
         self.assertIn("Browse loras", editors)
         self.assertIn("Needs a running ComfyUI.", editors)
         self.assertIn("Typed names still work.", editors)
-        self.assertIn('readOnlyLine("lora_id"', editors)
-        self.assertIn('readOnlyLine("theme_id"', editors)
-        self.assertIn('readOnlyLine("option_id"', editors)
+        self.assertIn("lora_id", editors)
+        self.assertIn("theme_id and option_id are assigned automatically", editors)
+        self.assertIn("以上皆非", editors)
         self.assertNotIn('field("lora_id"', editors)
         self.assertNotIn('field("theme_id"', editors)
         self.assertNotIn('field("option_id"', editors)
         self.assertNotIn('field("upstream theme_id"', editors)
         self.assertNotIn("promptField(", editors)
-        self.assertIn("strength (model & clip)", editors)
+        self.assertIn("strength writes both strength_model and strength_clip", editors)
         self.assertIn("input.readOnly = true", editors)
         self.assertLess(
             editors.index("Positive is the input above negative"),
             editors.index("Prompts are not stored in theme_json"),
         )
-        self.assertIn("There is no fallback option.", editors)
+        self.assertIn("contributes no tags", editors)
         self.assertIn("export function assignThemeDocument", model_js)
         self.assertIn("export function planThemeIds", model_js)
         self.assertIn("export function planOptionOutputs", model_js)
@@ -1228,7 +1310,8 @@ class NodeTests(unittest.TestCase):
         self.assertIn("S1ThemeRoot", editors)
         self.assertIn("S1Theme", editors)
         self.assertNotIn("S1Settings", editors)
-        self.assertNotIn("S1ThemeCollect", editors)
+        self.assertIn("S1ThemeCollect", editors)
+        self.assertIn("syncCollectInputs", editors)
         self.assertNotIn("S1LoraAggregate", editors)
         node = shutil.which("node")
         if node is None:

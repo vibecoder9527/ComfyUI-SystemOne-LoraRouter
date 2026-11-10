@@ -6,7 +6,7 @@ input is a real ``S1_DECISION``. An unselected parent slot is an
 
 Outputs are ``MAX_OPTION_OUTPUTS`` sockets of type ``S1_DECISION`` plus
 ``report_json`` at the last index. Slot ``i`` is ``theme.options[i]``. Slots
-past the option list are blockers. The frontend renames and hides them.
+past the option list are blockers. The frontend renames them and hides only unused pads that have no live wire.
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ from ..schema.types import (
     DecisionPayload,
     RouterSettings,
     SchemaError,
-    parse_theme,
+    parse_theme_for_run,
 )
 from ..theme_engine import dump_report, option_slot_values, run_theme
 
@@ -98,7 +98,7 @@ class _ThemeOutputs:
     def _run(self, positive, negative, settings, theme_json, upstream_result, role):
         if not isinstance(settings, RouterSettings):
             raise SchemaError("settings must be an S1_SETTINGS from SystemOne Settings")
-        theme = parse_theme(theme_json)
+        theme = parse_theme_for_run(theme_json)
         if len(theme.options) > MAX_OPTION_OUTPUTS:
             raise SchemaError(
                 f"theme {theme.theme_id!r} has {len(theme.options)} options; "

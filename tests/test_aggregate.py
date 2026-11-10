@@ -303,7 +303,7 @@ class AggregateTests(unittest.TestCase):
         self.assertEqual([item.theme_id for item in merged.result.decisions], ["left", "right"])
         with self.assertRaises(TYPES.SchemaError) as empty:
             AGG.collect_decisions(None, None)
-        self.assertIn("a or b", str(empty.exception))
+        self.assertIn("at least one input", str(empty.exception))
         with self.assertRaises(TYPES.SchemaError):
             AGG.collect_decisions(BLOCKER.execution_blocker(None), BLOCKER.execution_blocker(None))
         with self.assertRaises(TYPES.SchemaError):

@@ -46,8 +46,8 @@ class ThemeEngineTests(unittest.TestCase):
         urlopen.assert_not_called()
         self.assertEqual(client.calls, [])
         self.assertEqual(outcome.result.tags, [])
-        self.assertEqual(outcome.result.decisions[0].status, "error")
-        self.assertIn("no options", outcome.result.errors[0])
+        self.assertEqual(outcome.result.decisions[0].selected, ["none"])
+        self.assertTrue(outcome.result.decisions[0].raw.get("skipped_api"))
         self.assertFalse(outcome.report["api"]["called"])
         self.assertEqual(outcome.report["role"], "root")
         self.assertEqual(outcome.report["api"]["key_source"], "widget")
@@ -120,7 +120,7 @@ class ThemeEngineTests(unittest.TestCase):
         self.assertEqual(len(child_client.calls), 1)
         self.assertEqual(child_client.calls[0][0], {"positive": "child", "negative": ""})
         questions = child_client.calls[0][1]
-        self.assertEqual(set(questions), {"character_pack__waifu_a", "character_pack__waifu_b"})
+        self.assertEqual(set(questions), {"character_pack__waifu_a", "character_pack__waifu_b", "character_pack__none"})
         self.assertIn("具體選項", questions["character_pack__waifu_a"]["instructions"])
         self.assertIn("是否應啟用此選項", questions["character_pack__waifu_a"]["instructions"])
         self.assertTrue(questions["character_pack__waifu_a"]["instructions"].startswith("是否套用角色 LoRA"))
@@ -219,20 +219,20 @@ class ThemeEngineTests(unittest.TestCase):
         client = CountingClient()
         with mock.patch("urllib.request.urlopen") as urlopen:
             outcome = run_theme(
-                theme_json=theme_doc(options=[option("only", ["only_tag"])]),
+                theme_json=theme_doc(none_option_id="none", options=[option("none", [])]),
                 client=client,
             )
         urlopen.assert_not_called()
         self.assertEqual(client.calls, [])
         self.assertFalse(outcome.report["api"]["called"])
-        self.assertEqual(outcome.result.decisions[0].selected, ["only"])
+        self.assertEqual(outcome.result.decisions[0].selected, ["none"])
         self.assertTrue(outcome.result.decisions[0].raw["skipped_api"])
-        self.assertEqual(outcome.result.tags, ["only_tag"])
+        self.assertEqual(outcome.result.tags, [])
 
-        options = [option(f"opt{i}", [f"t{i}"]) for i in range(33)]
+        options = [option(f"opt{i}", [f"t{i}"]) for i in range(32)] + [option("none", [])]
         client = CountingClient()
         outcome = run_theme(
-            theme_json=theme_doc(select_mode="multi", options=options),
+            theme_json=theme_doc(select_mode="multi", none_option_id="none", options=options),
             positive="p",
             negative="n",
             client=client,

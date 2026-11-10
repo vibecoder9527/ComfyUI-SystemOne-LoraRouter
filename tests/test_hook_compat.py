@@ -120,6 +120,23 @@ class HookCompatTests(unittest.TestCase):
         self.assertIs(filtered["a"][1], blocked)
         self.assertIs(filtered["a"][2], live1)
 
+    def test_undeclared_dynamic_optional_blocker_is_dropped(self):
+        """Frontend-added Collect sockets may not appear in INPUT_TYPES yet."""
+        live = object()
+        packed = {"a": [live], "z": [Blocker(None)]}
+        filtered = COMPAT.drop_optional_execution_blockers(
+            DeclaredCollect(), packed, blocker_cls=Blocker
+        )
+        self.assertEqual(list(filtered.keys()), ["a"])
+        self.assertIs(filtered["a"][0], live)
+
+        collect = PKG.NODE_CLASS_MAPPINGS["S1ThemeCollect"]()
+        packed = {"a": [live], "q": [Blocker(None)]}
+        filtered = COMPAT.drop_optional_execution_blockers(
+            collect, packed, blocker_cls=Blocker
+        )
+        self.assertEqual(list(filtered.keys()), ["a"])
+
     def test_all_blocker_optional_sequence_is_dropped(self):
         packed = {"a": [Blocker(None), Blocker("x")], "b": [object()]}
         filtered = COMPAT.drop_optional_execution_blockers(

@@ -10,7 +10,9 @@ Control flow:
 - Settings (endpoint, key, model, noul threshold, on_error, min confidence)
   come from a ``RouterSettings`` object.
 - ``select_mode: single`` sends one ``choice`` question. One remaining option
-  skips the call and selects that option. This runner does not invent ``__none__``.
+  skips the call and selects that option. A default 以上皆非 option is added
+  when the document has no none choice, so a single user option still asks
+  SystemOne. Existing none-like options are reused and keep their slot index.
 - ``select_mode: multi`` sends one ``noul`` question per option. A score at or
   above ``noul_threshold`` selects it. More than 32 options are split across
   requests that share the same state.
@@ -42,7 +44,7 @@ from .schema.types import (
     build_settings,
     build_theme_result,
     empty_theme_result,
-    parse_theme,
+    parse_theme_for_run,
     public_decision,
 )
 from .systemone.client import (
@@ -139,7 +141,7 @@ def run_theme(
     else:
         upstream_result = _unwrap_upstream(upstream)
 
-    theme = parse_theme(theme_json)
+    theme = parse_theme_for_run(theme_json)
     if upstream_result.get(theme.theme_id) is not None:
         raise SchemaError(
             f"theme_id {theme.theme_id!r} is already in the upstream result"

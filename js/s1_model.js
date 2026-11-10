@@ -325,9 +325,75 @@ export function assignOptionIds(options) {
   return options;
 }
 
+export const DEFAULT_NONE_LABEL = "以上皆非";
+export const DEFAULT_NONE_DESCRIPTION = "以上皆非";
+export const PREFERRED_NONE_OPTION_ID = "none";
+const NONE_LIKE_IDS = new Set(["none", "__none__", "以上皆非"]);
+const NONE_LIKE_LABELS = new Set(["以上皆非", "none", "none of the above", "not on the list"]);
+
+function normText(value) {
+  return String(value || "").trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+export function isNoneLikeOption(option) {
+  if (!option || typeof option !== "object") return false;
+  const optionId = normText(option.option_id);
+  if (optionId && NONE_LIKE_IDS.has(optionId)) return true;
+  const label = normText(option.label);
+  if (label && NONE_LIKE_LABELS.has(label)) return true;
+  const description = normText(option.description);
+  if (description && NONE_LIKE_LABELS.has(description)) return true;
+  return false;
+}
+
+function nextNoneOptionId(existingIds) {
+  const used = new Set();
+  if (existingIds && typeof existingIds[Symbol.iterator] === "function") {
+    for (const item of existingIds) used.add(String(item));
+  }
+  if (!used.has(PREFERRED_NONE_OPTION_ID)) return PREFERRED_NONE_OPTION_ID;
+  let index = 2;
+  while (used.has(`${PREFERRED_NONE_OPTION_ID}_${index}`)) index += 1;
+  return `${PREFERRED_NONE_OPTION_ID}_${index}`;
+}
+
+export function ensureDefaultNoneOption(model) {
+  if (!model || typeof model !== "object" || Array.isArray(model)) {
+    return { model, changed: false, reused: false, added: false };
+  }
+  const options = Array.isArray(model.options) ? model.options : [];
+  model.options = options;
+  const known = new Set(options.map((option) => String(option?.option_id || "")).filter(Boolean));
+  const current = String(model.none_option_id || "").trim();
+  if (current && known.has(current)) return { model, changed: false, reused: true, added: false };
+  for (const option of options) {
+    if (!isNoneLikeOption(option)) continue;
+    if (!idKept(option.option_id)) {
+      option.option_id = nextNoneOptionId(known);
+      known.add(option.option_id);
+    }
+    model.none_option_id = option.option_id;
+    return { model, changed: true, reused: true, added: false };
+  }
+  if (options.length >= MAX_OPTION_OUTPUTS) {
+    return { model, changed: false, reused: false, added: false, error: `cannot add ${DEFAULT_NONE_LABEL}; option outputs are capped at ${MAX_OPTION_OUTPUTS}` };
+  }
+  const optionId = nextNoneOptionId(known);
+  options.push({
+    option_id: optionId,
+    label: DEFAULT_NONE_LABEL,
+    description: DEFAULT_NONE_DESCRIPTION,
+    tags: [],
+  });
+  model.none_option_id = optionId;
+  return { model, changed: true, reused: false, added: true };
+}
+
 export function assignThemeDocument(model) {
   if (!model || typeof model !== "object" || Array.isArray(model)) return model;
   if (!idKept(model.theme_id)) model.theme_id = nextThemeId([]);
+  assignOptionIds(model.options);
+  ensureDefaultNoneOption(model);
   assignOptionIds(model.options);
   return model;
 }
@@ -508,6 +574,7 @@ export function planOptionOutputs(themeJson) {
   const text = typeof themeJson === "string" ? themeJson : JSON.stringify(themeJson ?? null);
   const parsed = parseEditorDocument("theme", text);
   if (!parsed.ok) return { ok: false, error: parsed.error, slots: null };
+  ensureDefaultNoneOption(parsed.model);
   const options = parsed.model.options || [];
   if (options.length > MAX_OPTION_OUTPUTS) {
     return {
@@ -678,8 +745,10 @@ function ensureOutput(outputs, index, type) {
  *
  * Live means output.links or a graph.links entry whose origin is this node
  * and this slot (origin_id/originId, origin_slot/originSlot). Frontend 1.57
- * often has the wire only in graph.links. Unused pads stay visible, labeled
- * "·", with output.hidden left false. Hiding them still dropped links.
+ * often has the wire only in graph.links. Unused pads that have no live
+ * wire may set output.hidden so only defined options show. A connected
+ * slot is never hidden. Assigning output.links is still forbidden: that
+ * setter disconnects the wire on frontend 1.57.6.
  */
 export function relinkOptionSlots(node, slots) {
   if (!node || !Array.isArray(slots) || slots.length < MAX_OPTION_OUTPUTS) {
@@ -742,9 +811,10 @@ export function relinkOptionSlots(node, slots) {
     else if (!output.name) output.name = UNUSED_OPTION_LABEL;
     output.label = output.name;
     output.type = DECISION_TYPE;
-    // Never hide. Frontend 1.57.6 does not treat output.hidden as a safe
-    // way to collapse pads; a hidden socket loses its graph.links entry.
-    output.hidden = false;
+    // Hide only unused pads with no live wire. Frontend 1.57.6 drops a
+    // link when a connected socket is hidden, and assigning output.links
+    // disconnects it. Connected slots stay visible and untouched.
+    output.hidden = Boolean(plannedUnused && !live);
     output.s1OptionId = slot.option_id || "";
   }
   const report = ensureOutput(outputs, REPORT_OUTPUT_INDEX, "STRING");
@@ -1111,4 +1181,185 @@ export function loraNamesFromModels(data) {
       return "";
     }),
   );
+}
+
+
+export const MAX_COLLECT_INPUTS = 16;
+export const COLLECT_INPUT_NAMES = Array.from({ length: MAX_COLLECT_INPUTS }, (_, index) =>
+  String.fromCharCode("a".charCodeAt(0) + index),
+);
+export const COLLECT_TYPE = "S1_DECISION";
+
+function liveTargetSlots(node) {
+  const live = new Set();
+  eachGraphLink(node?.graph, (link) => {
+    const parts = linkParts(link);
+    if (!parts || !sameNodeId(parts.targetId, node.id)) return;
+    const index = asSlot(parts.targetSlot);
+    if (index == null || index < 0) return;
+    live.add(index);
+  });
+  return live;
+}
+
+function inputHasLink(input, liveSlots, index) {
+  if (!input) return false;
+  if (input.link != null && input.link !== false) return true;
+  return liveSlots.has(index);
+}
+
+/**
+ * Plan Collect visibility: every connected socket stays visible, plus one
+ * trailing empty socket. a remains visible even when nothing is wired so a
+ * new node has somewhere to connect. Connected sockets are never hidden.
+ */
+export function planCollectInputs(node) {
+  const names = COLLECT_INPUT_NAMES;
+  const inputs = Array.isArray(node?.inputs) ? node.inputs : [];
+  const liveSlots = liveTargetSlots(node);
+  const byName = new Map();
+  inputs.forEach((input, index) => {
+    if (input?.name) byName.set(String(input.name), { input, index, live: inputHasLink(input, liveSlots, index) });
+  });
+  const connected = [];
+  for (const name of names) {
+    const row = byName.get(name);
+    if (row?.live) connected.push(name);
+  }
+  const visible = new Set(connected);
+  visible.add("a");
+  const lastConnectedIndex = connected.length ? names.indexOf(connected[connected.length - 1]) : 0;
+  const emptyIndex = Math.min(lastConnectedIndex + (connected.length ? 1 : 0), names.length - 1);
+  visible.add(names[emptyIndex]);
+  if (!connected.length) visible.add("a");
+  return {
+    names,
+    visible: names.map((name) => visible.has(name)),
+    connected,
+    empty: names[emptyIndex],
+  };
+}
+
+export function syncCollectInputs(node) {
+  if (!node) return { ok: false };
+  if (!Array.isArray(node.inputs)) node.inputs = [];
+  const inputs = node.inputs;
+  const existing = new Map(inputs.map((input, index) => [input?.name, index]));
+  for (const name of COLLECT_INPUT_NAMES) {
+    if (existing.has(name)) continue;
+    inputs.push({ name, type: COLLECT_TYPE, link: null, hidden: true });
+  }
+  // Keep declared Collect sockets in name order, without compacting holes.
+  const byName = new Map();
+  const others = [];
+  for (const input of inputs) {
+    if (input && COLLECT_INPUT_NAMES.includes(input.name)) byName.set(input.name, input);
+    else others.push(input);
+  }
+  const ordered = COLLECT_INPUT_NAMES.map((name) => {
+    const input = byName.get(name) || { name, type: COLLECT_TYPE, link: null, hidden: true };
+    input.type = COLLECT_TYPE;
+    return input;
+  });
+  node.inputs = ordered.concat(others);
+  const plan = planCollectInputs(node);
+  const liveSlots = liveTargetSlots(node);
+  plan.names.forEach((name, index) => {
+    const input = node.inputs[index];
+    const live = inputHasLink(input, liveSlots, index);
+    input.hidden = !(live || plan.visible[index]);
+    if (live) input.hidden = false;
+  });
+  // Remap target_slot for graph.links after reorder, using the same care as
+  // orderThemePromptInputs: never assign input.link, only rewrite the slot index.
+  if (node.graph) {
+    node.inputs.forEach((input, index) => {
+      const linkId = input?.link;
+      if (linkId == null) return;
+      const links = node.graph.links;
+      const link = Array.isArray(links) ? links[linkId] : links?.get?.(linkId) ?? links?.[linkId];
+      if (!link) return;
+      if (Array.isArray(link)) link[4] = index;
+      else {
+        if ("target_slot" in link || !("targetSlot" in link)) link.target_slot = index;
+        if ("targetSlot" in link) link.targetSlot = index;
+      }
+    });
+  }
+  return { ok: true, plan };
+}
+
+function tagsFromLibraryJson(text) {
+  try {
+    const data = JSON.parse(String(text || "").replace(/^\uFEFF/, ""));
+    const loras = data?.loras;
+    if (!Array.isArray(loras)) return [];
+    const tags = [];
+    for (const entry of loras) {
+      const list = entry?.tags;
+      if (!Array.isArray(list)) continue;
+      for (const tag of list) {
+        if (typeof tag === "string" && tag.trim()) tags.push(tag.trim());
+      }
+    }
+    return tags;
+  } catch {
+    return [];
+  }
+}
+
+function tagsFromThemeJson(text) {
+  try {
+    const data = JSON.parse(String(text || "").replace(/^\uFEFF/, ""));
+    const options = data?.options;
+    if (!Array.isArray(options)) return [];
+    const tags = [];
+    for (const option of options) {
+      const list = option?.tags;
+      if (!Array.isArray(list)) continue;
+      for (const tag of list) {
+        if (typeof tag === "string" && tag.trim()) tags.push(tag.trim());
+      }
+    }
+    return tags;
+  } catch {
+    return [];
+  }
+}
+
+function widgetValueByName(node, name) {
+  const widgets = node?.widgets || [];
+  for (const widget of widgets) {
+    if (widget?.name === name) {
+      const value = widget.value;
+      return typeof value === "string" ? value : value == null ? "" : String(value);
+    }
+  }
+  return "";
+}
+
+export function collectGraphTags(graph, currentNode) {
+  const tags = [];
+  const seen = new Set();
+  const add = (item) => {
+    const tag = String(item || "").trim();
+    if (!tag || seen.has(tag)) return;
+    seen.add(tag);
+    tags.push(tag);
+  };
+  const visit = (owner) => {
+    const nodes = owner?._nodes || owner?.nodes || [];
+    for (const node of nodes) {
+      if (!node || node === currentNode) continue;
+      const kind = node.comfyClass || node.constructor?.comfyClass || node.type || "";
+      if (kind === "S1LoraLibrary") {
+        tagsFromLibraryJson(widgetValueByName(node, "library_json")).forEach(add);
+      } else if (kind === "S1ThemeRoot" || kind === "S1Theme") {
+        tagsFromThemeJson(widgetValueByName(node, "theme_json")).forEach(add);
+      }
+      if (node.subgraph) visit(node.subgraph);
+    }
+  };
+  visit(graph);
+  return tags;
 }

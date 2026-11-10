@@ -105,10 +105,10 @@ Library migration rules are unchanged: bindings become tags when the option had 
 - Settings is connected to every Theme Root and Theme that should call SystemOne.
 - Positive is the input above negative on each theme. Positive is required. Negative is optional. Prompts are not inside `theme_json`.
 - The child Theme's `upstream` comes from the parent option slot, not from output 0 of an old theme and not from `report_json` (index 32).
-- Aggregate's `decision` comes from a slot you expect to emit, or from Theme Collect of one or two branches.
+- Aggregate's `decision` comes from a slot you expect to emit, or from Theme Collect of one or more branches.
 - You did not leave a second copy of the API widgets on the theme.
 - A theme id is unique along any chain you will queue. `none_option_id` is still an option of that theme when you set it.
 
 ## Frontend 1.57 link preservation
 
-ComfyUI 0.44 with frontend 1.57.6 keeps option wires in `graph.links`. `output.links` can be empty, and assigning it disconnects the link. Setting `output.hidden` on an unused pad also drops wires, including a wire from an option slot into Theme Collect `a` or `b`. This package leaves all 32 option sockets visible. An unused pad is labeled `·`. The first sync after a load stamps `s1OptionId` and does not move or delete an existing wire. A later sync moves a wire only when its option id is still in `theme_json`. A wire that is still connected is kept when that id is gone. Theme Collect still runs when only one of `a` or `b` is a real `S1_DECISION`. The other input can be unconnected.
+ComfyUI 0.44 with frontend 1.57.6 keeps option wires in `graph.links`. `output.links` can be empty, and assigning it disconnects the link. Setting `output.hidden` on a *connected* socket drops wires, including a wire from an option slot into Theme Collect. Unused pads with no live wire are hidden and labeled `·`. A connected socket is never hidden. The first sync after a load stamps `s1OptionId` and does not move or delete an existing wire. A later sync moves a wire only when its option id is still in `theme_json`. A wire that is still connected is kept when that id is gone. A default 以上皆非 option is ensured at edit/run time. A saved None-like option (for example label `None` / description `Not on the list`) is reused so Collect links on slots 0 and 1 stay put. Theme Collect still runs when only some of its optional sockets carry a real `S1_DECISION`. Connecting a slot offers another empty input.

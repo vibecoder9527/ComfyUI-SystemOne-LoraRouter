@@ -222,27 +222,27 @@ def _collectable(value: Any) -> DecisionPayload | None:
     raise SchemaError("Theme Collect inputs must be S1_DECISION values")
 
 
-def collect_decisions(left: Any = None, right: Any = None) -> DecisionPayload:
-    """Merge two option-slot payloads. Identical theme ids collapse once.
+def collect_decisions(*payloads: Any) -> DecisionPayload:
+    """Merge option-slot payloads in argument order.
 
     Missing inputs and ``ExecutionBlocker`` values are ignored. One real
-    ``S1_DECISION`` is returned unchanged. Two real payloads merge: a
-    conflicting decision for the same ``theme_id`` raises ``SchemaError``.
+    ``S1_DECISION`` is returned unchanged. Two or more real payloads merge:
+    a conflicting decision for the same ``theme_id`` raises ``SchemaError``.
     Zero usable inputs raises ``SchemaError``. A merged output has an empty
     slot id and can feed another Theme, another Collect, or LoRA Aggregate.
     """
 
-    first = _collectable(left)
-    second = _collectable(right)
-    if first is None and second is None:
+    usable = [item for item in (_collectable(value) for value in payloads) if item is not None]
+    if not usable:
         raise SchemaError(
-            "Theme Collect needs an S1_DECISION on a or b; both were missing or blocked"
+            "Theme Collect needs an S1_DECISION on at least one input; "
+            "every input was missing or blocked"
         )
-    if first is None:
-        return second
-    if second is None:
-        return first
-    merged = collect_theme_results(first.result, second.result)
+    if len(usable) == 1:
+        return usable[0]
+    merged = usable[0].result
+    for item in usable[1:]:
+        merged = collect_theme_results(merged, item.result)
     return DecisionPayload(
         result=merged,
         slot_option_id="",

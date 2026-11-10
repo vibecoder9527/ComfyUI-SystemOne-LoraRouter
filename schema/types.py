@@ -17,13 +17,16 @@ EMPTY_LORA_LIBRARY_JSON = '{ "loras": [] }'
 EMPTY_THEME_JSON = (
     '{ "version": 1, "theme_id": "theme_1", "title": "Theme", '
     '"instructions": "Choose the options that fit the prompt.", '
-    '"select_mode": "single", "options": [] }'
+    '"select_mode": "single", "none_option_id": "none", '
+    '"options": [{ "option_id": "none", "label": "以上皆非", '
+    '"description": "以上皆非", "tags": [] }] }'
 )
 EMPTY_ENABLE_JSON = '{ "match": "any", "clauses": [] }'
 
 # Option sockets on Theme Root and Theme. Report JSON is the next output.
 # ComfyUI validates link indexes against RETURN_TYPES, so the count is fixed
-# and unused slots stay blocked. The frontend leaves those sockets visible.
+# and unused slots stay blocked. The frontend hides only unused pads that
+# have no live wire; a connected socket is never hidden or disconnected.
 MAX_OPTION_OUTPUTS = 32
 REPORT_OUTPUT_INDEX = MAX_OPTION_OUTPUTS
 
@@ -229,6 +232,15 @@ def parse_lora_library(source: str | dict[str, Any]) -> LoraLibrary:
 
 def parse_theme(source: str | dict[str, Any]) -> ThemeDefinition:
     return validate_theme(_load_object(source, "theme"))
+
+
+def parse_theme_for_run(source: str | dict[str, Any]) -> ThemeDefinition:
+    """Parse a theme after ensuring the default 以上皆非 option exists."""
+
+    from .none_option import ensure_default_none_option
+
+    data = _load_object(source, "theme")
+    return validate_theme(ensure_default_none_option(data))
 
 
 def parse_enable_rules(source: str | dict[str, Any]) -> EnableRules:
