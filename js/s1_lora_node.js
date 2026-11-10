@@ -18,6 +18,7 @@ import {
   isUsableLoraName,
   loraChooserMenuItems,
   withLoraChooserCallback,
+  makeLoraChooserPickCallback,
   loraNameFromMenuValue,
   loraNamesFromInfo,
   loraNamesFromModels,
@@ -236,14 +237,11 @@ function showFallbackChooser(event, names, onPick) {
 
 export function showLoraChooser(event, names, onPick) {
   const LG = liteGraph();
-  const callback = (value) => {
-    const picked = loraNameFromMenuValue(value);
-    if (isUsableLoraName(picked)) onPick(picked);
-  };
-  // Copy the pick callback onto every submenu. LiteGraph 1.57.6 constructs a
-  // submenu as `new ContextMenu(submenu.options, { callback: submenu.callback })`
-  // and does not inherit the parent menu's options.callback, which is why a
-  // folder pick (Anima/xxx.safetensors) added no row while root-level picks worked.
+  // Menu-level callback only (plus the same function on every submenu.callback).
+  // LiteGraph 1.57.6 inner_onclick calls options.callback and then value.callback,
+  // so putting the same pick handler on leaves as well added two rows per click.
+  // The once-guard still drops a second fire from the same open.
+  const callback = makeLoraChooserPickCallback(onPick);
   const items = withLoraChooserCallback(loraChooserMenuItems(names), callback);
   if (LG && typeof LG.ContextMenu === "function") {
     const scale = Math.max(1, app?.canvas?.ds?.scale ?? 1);

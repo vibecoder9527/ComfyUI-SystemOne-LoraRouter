@@ -84,6 +84,7 @@ import {
   newLoraRowFromPick,
   isUsableLoraName,
   withLoraChooserCallback,
+  makeLoraChooserPickCallback,
   normalizeLoraPath,
   loraNameFromMenuValue,
 } from "./js/s1_model.js";
@@ -1012,51 +1013,99 @@ assert(anima && anima.submenu && anima.submenu.callback === undefined, "raw subm
 const nestedLeaf = anima.submenu.options.find((item) => item.has_submenu).submenu.options[0];
 assert(nestedLeaf.s1LoraName === "Anima/sub/nested.safetensors", "multi-level leaves keep the full path");
 
-// Model LiteGraph 1.57.6: a submenu is `new ContextMenu(options, { callback: submenu.callback })`
-// and does not inherit the parent menu's options.callback.
-function liteGraph1576Pick(items, trail, rootCallback) {
-  let menuCallback = rootCallback;
-  let entries = items;
-  let current = null;
-  for (const step of trail) {
-    current = typeof step === "number" ? entries[step] : entries.find(step);
-    if (!current) return { picked: null, called: 0 };
-    if (current.has_submenu || current.submenu) {
-      menuCallback = current.submenu ? current.submenu.callback : undefined;
-      entries = current.submenu && current.submenu.options || [];
-    }
-  }
-  let called = 0;
-  let picked = null;
-  const receive = (value) => { called += 1; picked = loraNameFromMenuValue(value); };
-  if (typeof menuCallback === "function") receive(current);
-  if (typeof current.callback === "function" && current.callback !== menuCallback) receive(current);
-  return { picked, called };
+// LiteGraph 1.57.6 ContextMenu.addItem inner_onclick:
+//   1. options.callback(value) if set (menu-level)
+//   2. value.callback(value) if value is an object and ignore_item_callbacks is not set
+//   3. if value.submenu, new ContextMenu(submenu.options, { callback: submenu.callback, parentMenu })
+// close() may trigger pointerleave on parentMenu but does not re-invoke the
+// parent options.callback with the leaf. Opening a folder does invoke the
+// parent options.callback with the folder item first.
+function liteGraph1576InnerOnClick(item, menuCallback, extras) {
+  const parentMenuCallback = extras && extras.parentMenuCallback;
+  const parentItem = extras && extras.parentItem;
+  // Replay the folder click that opened this submenu (parent menu callback
+  // with the folder item). This must not consume a real pick.
+  if (typeof parentMenuCallback === "function" && parentItem) parentMenuCallback(parentItem);
+  if (typeof menuCallback === "function") menuCallback(item);
+  if (item && typeof item === "object" && typeof item.callback === "function") item.callback(item);
 }
 
 let rootCalls = 0;
-const rawPick = liteGraph1576Pick(rawMenu, [
-  (item) => item.has_submenu,
-  (item) => item.has_submenu,
-  (item) => item.s1LoraName && item.s1LoraName.includes("nested"),
-], () => { rootCalls += 1; });
-assert(rawPick.called === 0 && rootCalls === 0, "without injected callback, a nested LiteGraph pick invokes nothing");
+const rawNested = anima.submenu.options.find((item) => item.has_submenu).submenu.options[0];
+liteGraph1576InnerOnClick(rawNested, anima.submenu.callback, {
+  parentMenuCallback: () => { rootCalls += 1; },
+  parentItem: anima,
+});
+assert(rootCalls === 1, "opening a nested menu invokes the parent callback with the folder");
+assert(anima.submenu.callback === undefined, "raw submenu has no menu callback, so the leaf itself adds nothing");
 
-let injected = "";
-const wiredMenu = withLoraChooserCallback(rawMenu, (value) => { injected = loraNameFromMenuValue(value); });
+const wiredMenu = withLoraChooserCallback(rawMenu, () => {});
 const wiredAnima = wiredMenu.find((item) => item.has_submenu);
 assert(typeof wiredAnima.submenu.callback === "function", "injected callback is copied onto the first submenu");
 assert(typeof wiredAnima.submenu.options.find((item) => item.has_submenu).submenu.callback === "function", "injected callback is copied onto nested submenus");
 const wiredNested = wiredAnima.submenu.options.find((item) => item.has_submenu).submenu.options[0];
-assert(typeof wiredNested.callback === "function" && wiredNested.s1LoraName === "Anima/sub/nested.safetensors", "nested leaf gets the callback and full path");
-const wiredPick = liteGraph1576Pick(wiredMenu, [
-  (item) => item.has_submenu,
-  (item) => item.has_submenu,
-  (item) => item.s1LoraName && item.s1LoraName.includes("nested"),
-], wiredAnima.submenu.callback);
-// The root callback is not used at the nested menu; submenu.callback is.
-assert(wiredPick.called >= 1 && wiredPick.picked === "Anima/sub/nested.safetensors", "with injected callback, a nested LiteGraph pick returns the full path");
-assert(injected === "Anima/sub/nested.safetensors" || wiredPick.picked === "Anima/sub/nested.safetensors", "nested pick reaches the chooser callback");
+assert(wiredNested.s1LoraName === "Anima/sub/nested.safetensors", "nested leaf keeps the full path");
+assert(wiredNested.callback === undefined, "leaves do not also get item.callback (that would double-fire)");
+const wiredRoot = wiredMenu.find((item) => item.s1LoraName === "root.safetensors");
+assert(wiredRoot && wiredRoot.callback === undefined, "root leaves also have no item.callback");
+
+function chooserSession(action, start, index) {
+  let loras = Array.isArray(start) ? start.map((row) => ({ ...row })) : [];
+  const onPick = makeLoraChooserPickCallback((picked) => {
+    const result = applyLoraChooserAction(loras, action, picked, index);
+    if (result.changed) loras = result.loras;
+  });
+  const items = withLoraChooserCallback(loraChooserMenuItems(nestedNames), onPick);
+  return { onPick, items, loras: () => loras };
+}
+
+const rootSession = chooserSession("add", []);
+const rootLeaf = rootSession.items.find((item) => item.s1LoraName === "root.safetensors");
+liteGraph1576InnerOnClick(rootLeaf, rootSession.onPick);
+assert(rootSession.loras().length === 1 && rootSession.loras()[0].name === "root.safetensors", "root pick through menu callback adds exactly one row");
+// Force the 1.57.6 double-call (menu + item) against the once-guard.
+const rootAgain = chooserSession("add", []);
+const rootLeafAgain = { ...rootAgain.items.find((item) => item.s1LoraName === "root.safetensors"), callback: rootAgain.onPick };
+liteGraph1576InnerOnClick(rootLeafAgain, rootAgain.onPick);
+assert(rootAgain.loras().length === 1, "once-guard still adds only one row if item.callback also fires");
+
+const subSession = chooserSession("add", []);
+const subAnima = subSession.items.find((item) => item.has_submenu);
+const subLeaf = subAnima.submenu.options.find((item) => item.s1LoraName && item.s1LoraName.includes("anima-turbo"));
+liteGraph1576InnerOnClick(subLeaf, subAnima.submenu.callback, {
+  parentMenuCallback: subSession.onPick,
+  parentItem: subAnima,
+});
+assert(subSession.loras().length === 1 && subSession.loras()[0].name === "Anima/anima-turbo-lora-v0.2.safetensors", "subfolder pick adds exactly one row after parent folder callback");
+
+const nestSession = chooserSession("add", []);
+const nestAnima = nestSession.items.find((item) => item.has_submenu);
+const nestFolder = nestAnima.submenu.options.find((item) => item.has_submenu);
+const nestLeaf = nestFolder.submenu.options[0];
+liteGraph1576InnerOnClick(nestLeaf, nestFolder.submenu.callback, {
+  parentMenuCallback: nestSession.onPick,
+  parentItem: nestFolder,
+});
+assert(nestSession.loras().length === 1 && nestSession.loras()[0].name === "Anima/sub/nested.safetensors", "multi-level pick adds exactly one row");
+// Same leaf click with both menu and item callbacks plus parent folder fire.
+const nestBoth = chooserSession("add", []);
+const nestBothAnima = nestBoth.items.find((item) => item.has_submenu);
+const nestBothFolder = nestBothAnima.submenu.options.find((item) => item.has_submenu);
+const nestBothLeaf = { ...nestBothFolder.submenu.options[0], callback: nestBoth.onPick };
+liteGraph1576InnerOnClick(nestBothLeaf, nestBothFolder.submenu.callback, {
+  parentMenuCallback: nestBoth.onPick,
+  parentItem: nestBothFolder,
+});
+assert(nestBoth.loras().length === 1, "nested once-guard adds one row even if menu and item callbacks both fire");
+
+const swapSession = chooserSession("swap", [{ name: "root.safetensors", enabled_default: true, strength_model: 1, strength_clip: 1 }], 0);
+const swapAnima = swapSession.items.find((item) => item.has_submenu);
+const swapLeaf = { ...swapAnima.submenu.options.find((item) => item.s1LoraName && item.s1LoraName.includes("anima-turbo")), callback: swapSession.onPick };
+liteGraph1576InnerOnClick(swapLeaf, swapAnima.submenu.callback, {
+  parentMenuCallback: swapSession.onPick,
+  parentItem: swapAnima,
+});
+assert(swapSession.loras().length === 1 && swapSession.loras()[0].name === "Anima/anima-turbo-lora-v0.2.safetensors", "swap through the 1.57.6 click sequence fires once");
 
 const addedNested = applyLoraChooserAction([], "add", { s1LoraName: "Anima/sub/nested.safetensors", content: "nested.safetensors" });
 assert(addedNested.changed && addedNested.loras[0].name === "Anima/sub/nested.safetensors", "adding a multi-level folder pick stores the full path");
@@ -1806,9 +1855,12 @@ class NodeTests(unittest.TestCase):
         self.assertIn("＋ Add Lora", lora_node)
         self.assertIn("showLoraChooser", lora_node)
         self.assertIn("withLoraChooserCallback", lora_node)
+        self.assertIn("makeLoraChooserPickCallback", lora_node)
         self.assertIn("submenu.callback", lora_node)
         self.assertIn("export function withLoraChooserCallback", model_js)
+        self.assertIn("export function makeLoraChooserPickCallback", model_js)
         self.assertIn("export function normalizeLoraPath", model_js)
+        self.assertNotIn("next.callback = callback", model_js)
         self.assertIn('className: "dark"', lora_node)
         self.assertIn("LiteGraph", lora_node)
         self.assertIn("enabled_default", lora_node)

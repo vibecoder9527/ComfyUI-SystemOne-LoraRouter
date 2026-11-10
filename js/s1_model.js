@@ -1472,11 +1472,32 @@ export function loraNameFromMenuValue(value) {
 }
 
 /**
+ * One pick callback for a single chooser opening. LiteGraph 1.57.6
+ * ContextMenu.addItem inner_onclick calls options.callback and then, if
+ * the item is an object, value.callback. Unusable values (folders, None,
+ * cancel) do not consume the shot so a later real pick still works.
+ */
+export function makeLoraChooserPickCallback(onPick) {
+  let accepted = false;
+  return function s1LoraChooserPick(value) {
+    const picked = loraNameFromMenuValue(value);
+    if (!isUsableLoraName(picked)) return;
+    if (accepted) return;
+    accepted = true;
+    if (typeof onPick === "function") onPick(picked);
+  };
+}
+
+/**
  * LiteGraph.ContextMenu 1.57.6 opens a submenu as
  * `new ContextMenu(submenu.options, { callback: submenu.callback, parentMenu })`.
  * It does not inherit the parent menu's options.callback, so a top-level
  * chooser callback never runs for a file inside a folder unless it is
- * copied onto every submenu (and onto leaf items).
+ * copied onto every submenu.
+ *
+ * Copy the callback only onto submenu.callback (the menu-level
+ * options.callback of the child menu). Do not also set item.callback on
+ * leaves: inner_onclick would fire both and add two rows.
  */
 export function withLoraChooserCallback(items, callback) {
   if (!Array.isArray(items)) return [];
@@ -1488,9 +1509,8 @@ export function withLoraChooserCallback(items, callback) {
       submenu.callback = callback;
       submenu.options = withLoraChooserCallback(submenu.options || [], callback);
       next.submenu = submenu;
-    } else if (typeof callback === "function" && !next.disabled) {
-      next.callback = callback;
     }
+    if (next.callback === callback) delete next.callback;
     return next;
   });
 }
