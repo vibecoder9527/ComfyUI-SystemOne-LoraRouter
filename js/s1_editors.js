@@ -648,7 +648,7 @@ function tagField(path, value) {
 
 function noneField(theme) {
   // none_option_id is assigned automatically and is not a form field.
-  // The default 以上皆非 row is rendered as a locked option instead.
+  // The default None row is rendered as a locked option instead.
   return hint(`The last option is ${DEFAULT_NONE_LABEL}. It is selectable, has its own output slot, and contributes no tags.`);
 }
 
@@ -1267,6 +1267,7 @@ function installThemeSerialize(node) {
           links: output?.links,
           slot_index: output?.slot_index,
           localized_name: output?.localized_name,
+          label: output?.label,
           s1OptionId: output?.s1OptionId,
           s1PromptIndex: output?.s1PromptIndex,
         }));

@@ -93,3 +93,24 @@ class Frontend1576Tests(unittest.TestCase):
             r"outputs\s*\.\s*filter\s*\([^)]*hidden",
             "NodeSlots should not filter outputs by hidden (1.57.6 Vue Nodes 2.0)",
         )
+
+    def test_slot_and_node_menus_use_expected_1576_hooks(self):
+        # Vue OutputSlot and LiteGraph NodeSlot both display
+        # label || localized_name || name. Vue Nodes 2.0 opens the native
+        # node menu from LGraphNode @contextmenu -> handleContextMenu ->
+        # showNodeOptions.
+        hits = _search(
+            self.root,
+            (
+                "localized_name",
+                "showNodeOptions",
+                "handleContextMenu",
+            ),
+        )
+        self.assertTrue(hits["localized_name"], "frontend slot display still has localized_name")
+        self.assertTrue(hits["showNodeOptions"], "Vue Nodes 2.0 opens the native menu via showNodeOptions")
+        self.assertTrue(hits["handleContextMenu"], "LGraphNode handleContextMenu is present in 1.57.6")
+        # Prefer an unminified expression if the package ships it.
+        blob_hits = _search(self.root, ("label||", "localized_name"))
+        self.assertTrue(blob_hits["localized_name"])
+

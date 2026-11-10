@@ -1,17 +1,19 @@
 // Token/chip tag field for on-node Vue DOM widgets (LoRA rows and Theme table).
 // Storage stays an array of strings (comma-string input is accepted and re-emitted
 // as a deduped array). Legacy canvas fallback may skip this and show a comma string.
+// Chips wrap onto additional lines and the field grows with them; there is no
+// horizontal scrollbar. The input takes the remaining width on the last line.
 
 import { addTagToken, removeTagToken, tokenizeTags } from "./s1_model.js";
 
 const CSS = `
-.s1-tag-chips { display: flex; align-items: center; gap: 4px; min-width: 0; width: 100%; overflow-x: auto; overflow-y: hidden; flex-wrap: nowrap; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.1); border-radius: 6px; padding: 2px 4px; min-height: 24px; }
+.s1-tag-chips { display: flex; flex-wrap: wrap; align-items: center; align-content: flex-start; gap: 4px; min-width: 0; width: 100%; overflow: visible; height: auto; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.1); border-radius: 6px; padding: 2px 4px; min-height: 24px; }
 .s1-tag-chips.is-locked { opacity: 0.7; pointer-events: none; }
 .s1-tag-chip { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 2px; max-width: 9em; padding: 1px 4px 1px 6px; border-radius: 999px; background: rgba(61,110,168,0.55); color: inherit; font: 11px/1.3 system-ui, sans-serif; }
 .s1-tag-chip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .s1-tag-chip button { flex: 0 0 auto; width: 14px; height: 14px; border: 0; border-radius: 50%; background: transparent; color: inherit; cursor: pointer; font: 11px/14px system-ui, sans-serif; padding: 0; }
 .s1-tag-chip button:hover { background: rgba(0,0,0,0.25); }
-.s1-tag-chips input { flex: 1 0 4em; min-width: 4em; width: 4em; background: transparent; border: 0; color: inherit; font: inherit; padding: 2px 4px; outline: none; }
+.s1-tag-chips input { flex: 1 1 4em; min-width: 4em; width: auto; background: transparent; border: 0; color: inherit; font: inherit; padding: 2px 4px; outline: none; }
 `;
 
 let styleInjected = false;

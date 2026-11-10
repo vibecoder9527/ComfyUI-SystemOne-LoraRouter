@@ -10,7 +10,7 @@ Control flow:
 - Settings (endpoint, key, model, noul threshold, on_error, min confidence)
   come from a ``RouterSettings`` object.
 - ``select_mode: single`` sends one ``choice`` question. One remaining option
-  skips the call and selects that option. A default 以上皆非 option is added
+  skips the call and selects that option. A default None option is added
   when the document has no none choice, so a single user option still asks
   SystemOne. Existing none-like options are reused and keep their slot index.
 - ``select_mode: multi`` sends one ``noul`` question per option. A score at or

@@ -1,4 +1,4 @@
-"""UI-round-2: default 以上皆非, Collect dynamic inputs, sanitized workflow migration."""
+"""UI-round-2: default None option, Collect dynamic inputs, sanitized workflow migration."""
 
 from __future__ import annotations
 
@@ -52,7 +52,7 @@ class DefaultNoneOptionTests(unittest.TestCase):
         ensured = NONE.ensure_default_none_option(document)
         self.assertEqual(ensured["none_option_id"], "none")
         self.assertEqual(ensured["options"][0]["option_id"], "option_1")
-        self.assertEqual(ensured["options"][1]["label"], "以上皆非")
+        self.assertEqual(ensured["options"][1]["label"], "None")
         self.assertEqual(ensured["options"][1]["tags"], [])
 
     def test_parse_theme_for_run_adds_none_but_parse_theme_does_not(self):
@@ -81,6 +81,34 @@ class DefaultNoneOptionTests(unittest.TestCase):
             NONE.ensure_default_none_option({"options": options})
         self.assertIn("capped", str(ctx.exception))
 
+
+    def test_relabels_only_legacy_auto_generated_none_fields(self):
+        legacy = NONE.LEGACY_DEFAULT_NONE_TEXT
+        document = {
+            "none_option_id": "option_2",
+            "options": [
+                {"option_id": "option_1", "label": legacy, "description": "user option", "tags": ["keep"]},
+                {"option_id": "option_2", "label": legacy, "description": legacy, "tags": [legacy]},
+            ],
+        }
+        original = document["options"][1]["label"]
+        ensured = NONE.ensure_default_none_option(document)
+        self.assertEqual(ensured["options"][1]["label"], "None")
+        self.assertEqual(ensured["options"][1]["description"], "None")
+        self.assertEqual(ensured["options"][1]["tags"], [legacy])
+        self.assertEqual(ensured["options"][0]["label"], legacy)
+        self.assertEqual(document["options"][1]["label"], original, "source document is copied, not mutated")
+
+    def test_does_not_rewrite_custom_none_description(self):
+        ensured = NONE.ensure_default_none_option({
+            "none_option_id": "option_2",
+            "options": [
+                {"option_id": "option_1", "label": "bikini"},
+                {"option_id": "option_2", "label": NONE.LEGACY_DEFAULT_NONE_TEXT, "description": "Not on the list", "tags": []},
+            ],
+        })
+        self.assertEqual(ensured["options"][1]["label"], "None")
+        self.assertEqual(ensured["options"][1]["description"], "Not on the list")
 
 class ThemeCollectDynamicInputTests(unittest.TestCase):
     def test_declared_inputs_are_a_through_p(self):

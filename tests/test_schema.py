@@ -16,7 +16,7 @@ class SchemaTests(unittest.TestCase):
         self.assertEqual(theme.theme_id, "theme_1")
         self.assertEqual([opt.option_id for opt in theme.options], ["none"])
         self.assertEqual(theme.none_option_id, "none")
-        self.assertEqual(theme.options[0].label, "以上皆非")
+        self.assertEqual(theme.options[0].label, "None")
         rules = TYPES.parse_enable_rules(TYPES.EMPTY_ENABLE_JSON)
         self.assertEqual(rules.match, "any")
         self.assertEqual(rules.clauses, [])

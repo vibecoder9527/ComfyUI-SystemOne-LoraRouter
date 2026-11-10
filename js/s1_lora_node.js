@@ -17,6 +17,7 @@ import {
   commitModel,
   isUsableLoraName,
   loraChooserMenuItems,
+  withLoraChooserCallback,
   loraNameFromMenuValue,
   loraNamesFromInfo,
   loraNamesFromModels,
@@ -24,11 +25,28 @@ import {
   parseEditorDocument,
 } from "./s1_model.js";
 import { mountTagChips } from "./s1_tag_chips.js";
+import {
+  applyEditorNodeSize,
+  editorWidgetSizeOptions,
+  installEditorSizeGuard,
+  measureHostHeight,
+  observeEditorHostSize,
+} from "./s1_node_size.js";
+import {
+  bindRowContextMenu,
+  clearRowMenuElements,
+  installNativeNodeMenuSuppress,
+  registerRowMenuElement,
+} from "./s1_row_menu.js";
+
+const LORA_MIN_WIDTH = 420;
+const LORA_MIN_HEIGHT = 80;
 
 const CSS = `
 .s1-lora-node { box-sizing: border-box; width: 100%; padding: 2px 0 6px; color: var(--fg-color, #ddd); font: 12px/1.3 system-ui, sans-serif; user-select: none; }
 .s1-lora-node * { box-sizing: border-box; }
 .s1-lora-head, .s1-lora-row { display: flex; align-items: center; gap: 6px; }
+.s1-lora-row { align-items: flex-start; }
 .s1-lora-head { padding: 4px 10px 6px; opacity: 0.7; }
 .s1-lora-enable-col { width: 4.8em; flex: 0 0 4.8em; display: flex; align-items: center; }
 .s1-lora-head-label { flex: 1; min-width: 0; }
@@ -218,11 +236,15 @@ function showFallbackChooser(event, names, onPick) {
 
 export function showLoraChooser(event, names, onPick) {
   const LG = liteGraph();
-  const items = loraChooserMenuItems(names);
   const callback = (value) => {
     const picked = loraNameFromMenuValue(value);
     if (isUsableLoraName(picked)) onPick(picked);
   };
+  // Copy the pick callback onto every submenu. LiteGraph 1.57.6 constructs a
+  // submenu as `new ContextMenu(submenu.options, { callback: submenu.callback })`
+  // and does not inherit the parent menu's options.callback, which is why a
+  // folder pick (Anima/xxx.safetensors) added no row while root-level picks worked.
+  const items = withLoraChooserCallback(loraChooserMenuItems(names), callback);
   if (LG && typeof LG.ContextMenu === "function") {
     const scale = Math.max(1, app?.canvas?.ds?.scale ?? 1);
     // className "dark" + more than 4 items: Comfy.ContextMenuFilter in frontend
@@ -283,13 +305,14 @@ function renderLibrary(node) {
   const loras = Array.isArray(model.loras) ? model.loras : [];
   const tags = collectGraphTags(node.graph || app.graph, node);
   const listId = `s1-lora-tag-list-${node.id ?? "new"}`;
+  clearRowMenuElements(node);
   host.replaceChildren();
 
   const head = document.createElement("div");
   head.className = "s1-lora-head";
   const enableTitle = document.createElement("div");
   enableTitle.className = "s1-lora-enable-col";
-  enableTitle.textContent = "預設啟用";
+  enableTitle.textContent = "Default On";
   const nameTitle = document.createElement("div");
   nameTitle.className = "s1-lora-head-label";
   const strengthTitle = document.createElement("div");
@@ -304,8 +327,8 @@ function renderLibrary(node) {
   loras.forEach((entry, index) => {
     const row = document.createElement("div");
     row.className = "s1-lora-row";
-    row.addEventListener("contextmenu", (event) => {
-      event.preventDefault();
+    registerRowMenuElement(node, row);
+    bindRowContextMenu(row, (event) => {
       showRowMenu(event, node, index);
     });
 
@@ -421,13 +444,12 @@ function renderLibrary(node) {
   });
   host.append(add);
 
-  const height = 36 + loras.length * 40 + 44;
-  if (Array.isArray(node.size)) {
-    node.size[0] = Math.max(node.size[0] || 0, 420);
-    node.size[1] = Math.max(height + 40, 80);
-  }
-  node.setSize?.(node.size);
-  node.setDirtyCanvas?.(true, true);
+  const estimated = 36 + loras.length * 40 + 44;
+  applyEditorNodeSize(node, {
+    minWidth: LORA_MIN_WIDTH,
+    minHeight: LORA_MIN_HEIGHT,
+    contentHeight: measureHostHeight(host, estimated + 40),
+  });
 }
 
 export function installLoraLibraryNode(node) {
@@ -440,12 +462,18 @@ export function installLoraLibraryNode(node) {
   host.className = "s1-lora-node";
   node.__s1LoraHost = host;
 
-  const options = { hideOnZoom: false, serialize: false, getMinHeight: () => 80 };
+  installEditorSizeGuard(node);
+  installNativeNodeMenuSuppress(node);
+  const options = editorWidgetSizeOptions(host, LORA_MIN_HEIGHT);
   if (typeof node.addDOMWidget === "function") {
     const widget = node.addDOMWidget("s1_lora_rows", "s1_lora_rows", host, options);
     if (widget) {
       widget.serialize = false;
-      widget.options = { ...(widget.options || {}), serialize: false, hidden: false };
+      widget.options = { ...(widget.options || {}), ...options, serialize: false, hidden: false };
+      widget.computeSize = () => [
+        Math.max(LORA_MIN_WIDTH, node.size?.[0] || 0),
+        options.getHeight(),
+      ];
     }
   } else if (typeof node.addCustomWidget === "function") {
     node.addCustomWidget({
@@ -453,7 +481,10 @@ export function installLoraLibraryNode(node) {
       type: "s1_lora_rows",
       serialize: false,
       draw() {},
-      computeSize: () => [420, (readLibrary(node).loras || []).length * 40 + 80],
+      computeSize: () => [
+        Math.max(LORA_MIN_WIDTH, node.size?.[0] || 0),
+        Math.max(LORA_MIN_HEIGHT, measureHostHeight(host, (readLibrary(node).loras || []).length * 40 + 80)),
+      ],
     });
     const attach = () => {
       const el = node.vueHost || node.container || null;
@@ -473,6 +504,13 @@ export function installLoraLibraryNode(node) {
     return result;
   };
 
+  observeEditorHostSize(host, () => {
+    applyEditorNodeSize(node, {
+      minWidth: LORA_MIN_WIDTH,
+      minHeight: LORA_MIN_HEIGHT,
+      contentHeight: measureHostHeight(host, LORA_MIN_HEIGHT),
+    });
+  });
   renderLibrary(node);
   loadLoraNames();
 }

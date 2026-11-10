@@ -21,6 +21,22 @@ import {
   relinkOptionSlots,
 } from "./s1_model.js";
 import { mountTagChips } from "./s1_tag_chips.js";
+import {
+  applyEditorNodeSize,
+  editorWidgetSizeOptions,
+  installEditorSizeGuard,
+  measureHostHeight,
+  observeEditorHostSize,
+} from "./s1_node_size.js";
+import {
+  bindRowContextMenu,
+  clearRowMenuElements,
+  installNativeNodeMenuSuppress,
+  registerRowMenuElement,
+} from "./s1_row_menu.js";
+
+const THEME_MIN_WIDTH = 460;
+const THEME_MIN_HEIGHT = 160;
 
 const CSS = `
 .s1-theme-node { box-sizing: border-box; width: 100%; padding: 2px 0 6px; color: var(--fg-color, #ddd); font: 12px/1.3 system-ui, sans-serif; }
@@ -29,7 +45,7 @@ const CSS = `
 .s1-theme-desc { display: block; width: calc(100% - 16px); margin: 0 8px 8px; min-height: 64px; resize: vertical; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.12); color: inherit; font: inherit; border-radius: 8px; padding: 6px 8px; }
 .s1-theme-table { width: calc(100% - 16px); margin: 0 8px; border-collapse: collapse; table-layout: fixed; }
 .s1-theme-table th { text-align: left; font-weight: 500; opacity: 0.7; padding: 4px 6px; }
-.s1-theme-table td { padding: 3px 6px; vertical-align: middle; }
+.s1-theme-table td { padding: 3px 6px; vertical-align: top; }
 .s1-theme-table .col-opt { width: 3.2em; text-align: center; }
 .s1-theme-table .col-desc { width: auto; }
 .s1-theme-table .col-tags { width: 11em; }
@@ -170,6 +186,7 @@ function renderTheme(node) {
   const rows = optionDisplayOrder(model.options || [], noneId);
   const tags = collectGraphTags(node.graph || app.graph, node);
   const listId = `s1-theme-tag-list-${node.id ?? "new"}`;
+  clearRowMenuElements(node);
   host.replaceChildren();
 
   const heading = document.createElement("div");
@@ -197,8 +214,8 @@ function renderTheme(node) {
     const tr = document.createElement("tr");
     if (isNone) tr.className = "is-none";
     if (!isNone) {
-      tr.addEventListener("contextmenu", (event) => {
-        event.preventDefault();
+      registerRowMenuElement(node, tr);
+      bindRowContextMenu(tr, (event) => {
         showRowMenu(event, node, option.option_id);
       });
     }
@@ -268,13 +285,12 @@ function renderTheme(node) {
   });
   host.append(add);
 
-  const height = 36 + 80 + 28 + rows.length * 34 + 44;
-  if (Array.isArray(node.size)) {
-    node.size[0] = Math.max(node.size[0] || 0, 460);
-    node.size[1] = Math.max(height + 40, 160);
-  }
-  node.setSize?.(node.size);
-  node.setDirtyCanvas?.(true, true);
+  const estimated = 36 + 80 + 28 + rows.length * 34 + 44;
+  applyEditorNodeSize(node, {
+    minWidth: THEME_MIN_WIDTH,
+    minHeight: THEME_MIN_HEIGHT,
+    contentHeight: measureHostHeight(host, estimated + 40),
+  });
 }
 
 export function installThemeNode(node) {
@@ -287,12 +303,18 @@ export function installThemeNode(node) {
   host.className = "s1-theme-node";
   node.__s1ThemeHost = host;
 
-  const options = { hideOnZoom: false, serialize: false, getMinHeight: () => 160 };
+  installEditorSizeGuard(node);
+  installNativeNodeMenuSuppress(node);
+  const options = editorWidgetSizeOptions(host, THEME_MIN_HEIGHT);
   if (typeof node.addDOMWidget === "function") {
     const widget = node.addDOMWidget("s1_theme_rows", "s1_theme_rows", host, options);
     if (widget) {
       widget.serialize = false;
-      widget.options = { ...(widget.options || {}), serialize: false, hidden: false };
+      widget.options = { ...(widget.options || {}), ...options, serialize: false, hidden: false };
+      widget.computeSize = () => [
+        Math.max(THEME_MIN_WIDTH, node.size?.[0] || 0),
+        options.getHeight(),
+      ];
     }
   } else if (typeof node.addCustomWidget === "function") {
     node.addCustomWidget({
@@ -300,7 +322,10 @@ export function installThemeNode(node) {
       type: "s1_theme_rows",
       serialize: false,
       draw() {},
-      computeSize: () => [460, ((readTheme(node).options || []).length) * 34 + 180],
+      computeSize: () => [
+        Math.max(THEME_MIN_WIDTH, node.size?.[0] || 0),
+        Math.max(THEME_MIN_HEIGHT, measureHostHeight(host, ((readTheme(node).options || []).length) * 34 + 180)),
+      ],
     });
     const attach = () => {
       const el = node.vueHost || node.container || null;
@@ -320,5 +345,12 @@ export function installThemeNode(node) {
     return result;
   };
 
+  observeEditorHostSize(host, () => {
+    applyEditorNodeSize(node, {
+      minWidth: THEME_MIN_WIDTH,
+      minHeight: THEME_MIN_HEIGHT,
+      contentHeight: measureHostHeight(host, THEME_MIN_HEIGHT),
+    });
+  });
   renderTheme(node);
 }

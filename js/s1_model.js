@@ -325,11 +325,13 @@ export function assignOptionIds(options) {
   return options;
 }
 
-export const DEFAULT_NONE_LABEL = "以上皆非";
-export const DEFAULT_NONE_DESCRIPTION = "以上皆非";
+export const DEFAULT_NONE_LABEL = "None";
+export const DEFAULT_NONE_DESCRIPTION = "None";
 export const PREFERRED_NONE_OPTION_ID = "none";
-const NONE_LIKE_IDS = new Set(["none", "__none__", "以上皆非"]);
-const NONE_LIKE_LABELS = new Set(["以上皆非", "none", "none of the above", "not on the list"]);
+// Former auto-generated default. Kept only to recognize and relabel saved None rows.
+export const LEGACY_DEFAULT_NONE_TEXT = "以上皆非";
+const NONE_LIKE_IDS = new Set(["none", "__none__", LEGACY_DEFAULT_NONE_TEXT]);
+const NONE_LIKE_LABELS = new Set([LEGACY_DEFAULT_NONE_TEXT, "none", "none of the above", "not on the list"]);
 
 function normText(value) {
   return String(value || "").trim().toLowerCase().replace(/\s+/g, " ");
@@ -344,6 +346,37 @@ export function isNoneLikeOption(option) {
   const description = normText(option.description);
   if (description && NONE_LIKE_LABELS.has(description)) return true;
   return false;
+}
+
+/** True only when a field is exactly the former auto-generated default (trimmed). */
+export function isLegacyDefaultNoneText(value) {
+  return String(value ?? "").trim() === LEGACY_DEFAULT_NONE_TEXT;
+}
+
+/**
+ * Relabel the designated None option when a field is clearly the former
+ * auto-generated default "以上皆非". Never rewrites user-typed text, tags,
+ * option_id, or any other option.
+ */
+export function relabelLegacyDefaultNoneOption(option) {
+  if (!option || typeof option !== "object") return false;
+  let changed = false;
+  if (isLegacyDefaultNoneText(option.label)) {
+    option.label = DEFAULT_NONE_LABEL;
+    changed = true;
+  }
+  if (isLegacyDefaultNoneText(option.description)) {
+    option.description = DEFAULT_NONE_DESCRIPTION;
+    changed = true;
+  }
+  return changed;
+}
+
+function applyLegacyNoneRelabel(model) {
+  const noneId = String(model?.none_option_id || "").trim();
+  if (!noneId || !Array.isArray(model.options)) return false;
+  const option = model.options.find((item) => String(item?.option_id || "") === noneId);
+  return relabelLegacyDefaultNoneOption(option);
 }
 
 function nextNoneOptionId(existingIds) {
@@ -365,7 +398,11 @@ export function ensureDefaultNoneOption(model) {
   model.options = options;
   const known = new Set(options.map((option) => String(option?.option_id || "")).filter(Boolean));
   const current = String(model.none_option_id || "").trim();
-  if (current && known.has(current)) return { model, changed: false, reused: true, added: false };
+  if (current && known.has(current)) {
+    model.none_option_id = current;
+    const relabeled = applyLegacyNoneRelabel(model);
+    return { model, changed: relabeled, reused: true, added: false };
+  }
   for (const option of options) {
     if (!isNoneLikeOption(option)) continue;
     if (!idKept(option.option_id)) {
@@ -373,7 +410,8 @@ export function ensureDefaultNoneOption(model) {
       known.add(option.option_id);
     }
     model.none_option_id = option.option_id;
-    return { model, changed: true, reused: true, added: false };
+    const relabeled = applyLegacyNoneRelabel(model);
+    return { model, changed: true, reused: true, added: false, relabeled };
   }
   if (options.length >= MAX_OPTION_OUTPUTS) {
     return { model, changed: false, reused: false, added: false, error: `cannot add ${DEFAULT_NONE_LABEL}; option outputs are capped at ${MAX_OPTION_OUTPUTS}` };
@@ -558,12 +596,50 @@ export const MAX_OPTION_OUTPUTS = 32;
 export const DECISION_TYPE = "S1_DECISION";
 export const REPORT_OUTPUT_INDEX = MAX_OPTION_OUTPUTS;
 
-/** Visible slot label. A label and an id become "label (id)". */
+/** Internal slot name. A label and an id become "label (id)". Not shown in the UI. */
 export function optionOutputName(option) {
   const id = option && option.option_id != null ? String(option.option_id) : "";
   const label = option && option.label != null ? String(option.label).trim() : "";
   if (label && id) return `${label} (${id})`;
   return id || label;
+}
+
+/** Visible option text from label, then description. Does not include option_id. */
+export function optionDisplayText(option) {
+  const label = option && option.label != null ? String(option.label).trim() : "";
+  const description = option && option.description != null ? String(option.description).trim() : "";
+  return label || description;
+}
+
+/**
+ * Visible socket labels in options-array / prompt-index order.
+ * Display numbers follow the table (user options, then None last).
+ * Empty text becomes "Option N". Duplicate names keep the first bare and
+ * suffix later ones with " #N" using the table display number.
+ * Never includes option_id.
+ */
+export function optionOutputLabels(options, noneOptionId) {
+  const list = Array.isArray(options) ? options : [];
+  const displayed = optionDisplayOrder(list, noneOptionId);
+  const rows = displayed.map((option, index) => {
+    const number = index + 1;
+    const raw = optionDisplayText(option);
+    return { option, number, raw: raw || `Option ${number}` };
+  });
+  const counts = new Map();
+  for (const row of rows) counts.set(row.raw, (counts.get(row.raw) || 0) + 1);
+  const seen = new Map();
+  const byOption = new Map();
+  for (const row of rows) {
+    let text = row.raw;
+    if ((counts.get(row.raw) || 0) > 1) {
+      const next = (seen.get(row.raw) || 0) + 1;
+      seen.set(row.raw, next);
+      if (next > 1) text = `${row.raw} #${row.number}`;
+    }
+    byOption.set(row.option, text);
+  }
+  return list.map((option, index) => byOption.get(option) || optionDisplayText(option) || `Option ${index + 1}`);
 }
 
 /**
@@ -583,14 +659,18 @@ export function planOptionOutputs(themeJson) {
       slots: null,
     };
   }
+  const displayLabels = optionOutputLabels(options, parsed.model.none_option_id);
   const slots = [];
   for (let index = 0; index < MAX_OPTION_OUTPUTS; index += 1) {
     if (index < options.length) {
       const option = options[index];
+      const visible = displayLabels[index] || optionDisplayText(option) || `Option ${index + 1}`;
       slots.push({
         index,
         option_id: String(option.option_id || ""),
         name: optionOutputName(option),
+        label: visible,
+        localized_name: visible,
         type: DECISION_TYPE,
         hidden: false,
       });
@@ -809,7 +889,20 @@ export function relinkOptionSlots(node, slots) {
     if (!plannedUnused && slot.name) output.name = slot.name;
     else if (plannedUnused && !live) output.name = UNUSED_OPTION_LABEL;
     else if (!output.name) output.name = UNUSED_OPTION_LABEL;
-    output.label = output.name;
+    // Vue Nodes 2.0 and classic canvas both show
+    // label || localized_name || name. Keep output.name as the internal
+    // slot name; only the visible fields drop option_id.
+    if (!plannedUnused && (slot.label || slot.localized_name)) {
+      const visible = slot.label || slot.localized_name;
+      output.label = visible;
+      output.localized_name = visible;
+    } else if (plannedUnused && !live) {
+      output.label = UNUSED_OPTION_LABEL;
+      output.localized_name = UNUSED_OPTION_LABEL;
+    } else {
+      output.label = output.label || output.name;
+      output.localized_name = output.localized_name || output.label || output.name;
+    }
     output.type = DECISION_TYPE;
     // Hide only unused pads with no live wire. Frontend 1.57.6 drops a
     // link when a connected socket is hidden, and assigning output.links
@@ -1353,8 +1446,12 @@ export function tagsToCommaString(tags) {
   return tokenizeTags(tags).join(", ");
 }
 
+export function normalizeLoraPath(name) {
+  return String(name ?? "").trim().replace(/\\/g, "/");
+}
+
 export function isUsableLoraName(name) {
-  const text = String(name ?? "").trim();
+  const text = normalizeLoraPath(name);
   if (!text) return false;
   if (/^none$/i.test(text)) return false;
   return true;
@@ -1362,16 +1459,40 @@ export function isUsableLoraName(name) {
 
 export function loraNameFromMenuValue(value) {
   if (value == null) return "";
-  if (typeof value === "string") return value;
+  if (typeof value === "string") return normalizeLoraPath(value);
   if (typeof value === "object") {
     if (value.has_submenu) return "";
-    if (value.s1LoraName) return String(value.s1LoraName);
-    if (value.value != null && typeof value.value !== "object") return String(value.value);
+    if (value.s1LoraName) return normalizeLoraPath(value.s1LoraName);
+    if (value.value != null && typeof value.value !== "object") return normalizeLoraPath(value.value);
     const content = value.content != null ? String(value.content) : "";
     if (content.startsWith("📁")) return "";
-    if (content) return content;
+    if (content) return normalizeLoraPath(content);
   }
-  return String(value);
+  return normalizeLoraPath(String(value));
+}
+
+/**
+ * LiteGraph.ContextMenu 1.57.6 opens a submenu as
+ * `new ContextMenu(submenu.options, { callback: submenu.callback, parentMenu })`.
+ * It does not inherit the parent menu's options.callback, so a top-level
+ * chooser callback never runs for a file inside a folder unless it is
+ * copied onto every submenu (and onto leaf items).
+ */
+export function withLoraChooserCallback(items, callback) {
+  if (!Array.isArray(items)) return [];
+  return items.map((item) => {
+    if (!item || typeof item !== "object") return item;
+    const next = { ...item };
+    if (next.has_submenu || next.submenu) {
+      const submenu = { ...(next.submenu || {}) };
+      submenu.callback = callback;
+      submenu.options = withLoraChooserCallback(submenu.options || [], callback);
+      next.submenu = submenu;
+    } else if (typeof callback === "function" && !next.disabled) {
+      next.callback = callback;
+    }
+    return next;
+  });
 }
 
 /** Nested folder tree from LoRA paths like "Anima/sub/name.safetensors". */
@@ -1420,7 +1541,7 @@ export function loraChooserMenuItems(names) {
 }
 
 export function newLoraRowFromPick(name) {
-  const picked = loraNameFromMenuValue(name).trim();
+  const picked = loraNameFromMenuValue(name);
   if (!isUsableLoraName(picked)) return null;
   const row = blankLora();
   row.name = picked;
@@ -1436,7 +1557,7 @@ export function newLoraRowFromPick(name) {
  */
 export function applyLoraChooserAction(loras, action, picked, index) {
   const list = Array.isArray(loras) ? loras.map((entry) => ({ ...(entry || {}) })) : [];
-  const name = loraNameFromMenuValue(picked).trim();
+  const name = loraNameFromMenuValue(picked);
   if (action === "add") {
     const row = newLoraRowFromPick(name);
     if (!row) return { loras: list, changed: false };

@@ -18,8 +18,8 @@ EMPTY_THEME_JSON = (
     '{ "version": 1, "theme_id": "theme_1", "title": "Theme", '
     '"instructions": "Choose the options that fit the prompt.", '
     '"select_mode": "single", "none_option_id": "none", '
-    '"options": [{ "option_id": "none", "label": "以上皆非", '
-    '"description": "以上皆非", "tags": [] }] }'
+    '"options": [{ "option_id": "none", "label": "None", '
+    '"description": "None", "tags": [] }] }'
 )
 EMPTY_ENABLE_JSON = '{ "match": "any", "clauses": [] }'
 
@@ -235,7 +235,7 @@ def parse_theme(source: str | dict[str, Any]) -> ThemeDefinition:
 
 
 def parse_theme_for_run(source: str | dict[str, Any]) -> ThemeDefinition:
-    """Parse a theme after ensuring the default 以上皆非 option exists."""
+    """Parse a theme after ensuring the default None option exists."""
 
     from .none_option import ensure_default_none_option
 

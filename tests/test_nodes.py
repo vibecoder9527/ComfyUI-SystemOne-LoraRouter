@@ -55,6 +55,10 @@ import {
   planOptionOutputs,
   planThemeIds,
   optionOutputName,
+  optionDisplayText,
+  optionOutputLabels,
+  relabelLegacyDefaultNoneOption,
+  LEGACY_DEFAULT_NONE_TEXT,
   relinkOptionSlots,
   orderThemePromptInputs,
   MAX_OPTION_OUTPUTS,
@@ -79,7 +83,21 @@ import {
   applyLoraChooserAction,
   newLoraRowFromPick,
   isUsableLoraName,
+  withLoraChooserCallback,
+  normalizeLoraPath,
+  loraNameFromMenuValue,
 } from "./js/s1_model.js";
+import { nextEditorNodeSize, applyEditorNodeSize, installEditorSizeGuard, measureHostHeight } from "./js/s1_node_size.js";
+import {
+  bindRowContextMenu,
+  stopRowContextMenuEvent,
+  isRightClickEvent,
+  shouldSuppressNativeNodeMenu,
+  hitTestNodeRows,
+  registerRowMenuElement,
+  clearRowMenuElements,
+  installNativeNodeMenuSuppress,
+} from "./js/s1_row_menu.js";
 
 function assert(cond, message) {
   if (!cond) {
@@ -365,9 +383,83 @@ assert(optionOutputName({ option_id: "none", label: "  " }) === "none", "id only
 const planned = planOptionOutputs(JSON.stringify(themeBody));
 assert(planned.ok && planned.slots.length === MAX_OPTION_OUTPUTS, "32 slots");
 assert(planned.slots[0].name === "Anime (anime)" && planned.slots[0].hidden === false, "first visible");
+assert(planned.slots[0].label === "Anime" && planned.slots[0].localized_name === "Anime", "first visible label drops id");
 assert(planned.slots[1].name === "none" && planned.slots[1].type === "S1_DECISION", "second visible");
+assert(planned.slots[1].label === "Option 2" && planned.slots[1].localized_name === "Option 2", "empty none uses table display number");
 assert(planned.slots[2].hidden === true && planned.slots[2].name === "", "pad hidden");
 assert(planned.reportIndex === 32, "report index");
+
+assert(optionDisplayText({ label: " bikini ", description: "ignored" }) === "bikini", "label wins over description");
+assert(optionDisplayText({ label: "  ", description: " dress " }) === "dress", "description fills empty label");
+assert(optionDisplayText({ label: "", description: "" }) === "", "both empty");
+
+const displayTheme = {
+  version: 1,
+  theme_id: "outfit",
+  title: "Outfit",
+  instructions: "Choose.",
+  select_mode: "single",
+  none_option_id: "option_2",
+  options: [
+    { option_id: "option_1", label: "bikini", description: "" },
+    { option_id: "option_2", label: "None", description: "" },
+    { option_id: "option_3", label: "dress", description: "" },
+  ],
+};
+assert(
+  JSON.stringify(optionOutputLabels(displayTheme.options, "option_2")) === JSON.stringify(["bikini", "None", "dress"]),
+  "labels are names only, in prompt order, None text kept",
+);
+const plannedDisplay = planOptionOutputs(JSON.stringify(displayTheme));
+assert(plannedDisplay.ok, "display plan ok");
+assert(plannedDisplay.slots[0].name === "bikini (option_1)" && plannedDisplay.slots[0].label === "bikini", "bikini name+label");
+assert(plannedDisplay.slots[1].name === "None (option_2)" && plannedDisplay.slots[1].label === "None", "None name+label mid-id");
+assert(plannedDisplay.slots[2].name === "dress (option_3)" && plannedDisplay.slots[2].label === "dress", "dress name+label");
+assert(plannedDisplay.slots[0].localized_name === "bikini" && plannedDisplay.slots[2].localized_name === "dress", "localized_name matches");
+
+const emptyTheme = {
+  version: 1,
+  theme_id: "empty_names",
+  title: "Empty",
+  instructions: "Choose.",
+  select_mode: "single",
+  none_option_id: "option_2",
+  options: [
+    { option_id: "option_1", label: "  ", description: "" },
+    { option_id: "option_2", label: "", description: "" },
+    { option_id: "option_3", label: "", description: "  " },
+  ],
+};
+assert(
+  JSON.stringify(optionOutputLabels(emptyTheme.options, "option_2")) === JSON.stringify(["Option 1", "Option 3", "Option 2"]),
+  "empty names fall back to Option N with table display numbers, mapped to prompt order",
+);
+const plannedEmpty = planOptionOutputs(JSON.stringify(emptyTheme));
+assert(plannedEmpty.slots[0].name === "option_1" && plannedEmpty.slots[0].label === "Option 1", "empty first keeps id as name");
+assert(plannedEmpty.slots[1].name === "option_2" && plannedEmpty.slots[1].label === "Option 3", "empty mid-id None is table row 3");
+assert(plannedEmpty.slots[2].name === "option_3" && plannedEmpty.slots[2].label === "Option 2", "empty third is table row 2");
+
+const dupTheme = {
+  version: 1,
+  theme_id: "dups",
+  title: "Dups",
+  instructions: "Choose.",
+  select_mode: "single",
+  none_option_id: "option_2",
+  options: [
+    { option_id: "option_1", label: "bikini", description: "" },
+    { option_id: "option_2", label: "None", description: "" },
+    { option_id: "option_3", label: "bikini", description: "" },
+  ],
+};
+assert(
+  JSON.stringify(optionOutputLabels(dupTheme.options, "option_2")) === JSON.stringify(["bikini", "None", "bikini #2"]),
+  "duplicate names: first stays bare, later uses table display number",
+);
+const plannedDup = planOptionOutputs(JSON.stringify(dupTheme));
+assert(plannedDup.slots[0].name === "bikini (option_1)" && plannedDup.slots[0].label === "bikini", "dup first name unchanged");
+assert(plannedDup.slots[2].name === "bikini (option_3)" && plannedDup.slots[2].label === "bikini #2", "dup later gets #2");
+assert(plannedDup.slots[1].name === "None (option_2)" && plannedDup.slots[1].label === "None", "None not treated as a dup of bikini");
 const invalidPlan = planOptionOutputs("{");
 assert(!invalidPlan.ok && invalidPlan.slots === null, "invalid plan leaves slots null");
 
@@ -387,6 +479,9 @@ const fresh = {
 const firstSync = relinkOptionSlots(fresh, planned.slots);
 assert(firstSync.first === true && firstSync.moved === 0, "first sync does not move");
 assert(fresh.graph.links[4].origin_slot === 0, "first leaves the option link");
+assert(fresh.outputs[0].name === "Anime (anime)" && fresh.outputs[0].label === "Anime", "relink keeps slot name, sets label");
+assert(fresh.outputs[0].localized_name === "Anime", "relink sets localized_name");
+assert(fresh.outputs[1].name === "none" && fresh.outputs[1].label === "Option 2", "empty none label is Option 2");
 assert(fresh.graph.links[5].origin_slot === 1, "report name alone does not retarget");
 assert(fresh.outputs[0].s1OptionId === "anime", "stamped by index");
 
@@ -603,7 +698,8 @@ const added = ensureDefaultNoneOption({
 });
 assert(added.added === true && added.model.options.length === 2, "default none is appended");
 assert(added.model.options[0].option_id === "option_1", "append keeps the first slot");
-assert(added.model.none_option_id === "none" && added.model.options[1].label === DEFAULT_NONE_LABEL, "appended 以上皆非");
+assert(added.model.none_option_id === "none" && added.model.options[1].label === DEFAULT_NONE_LABEL, "appended default None");
+assert(DEFAULT_NONE_LABEL === "None", "new defaults are English None");
 assert(isNoneLikeOption({ label: "None", description: "Not on the list" }), "None / Not on the list is none-like");
 
 const collectNode = {
@@ -689,6 +785,181 @@ assert(midNode.graph.links[42].origin_slot === 1 && midNode.graph.links[43].orig
 compactOptionOutputs(midNode, "option_2");
 assert(midNode.outputs[2].s1OptionId === "option_2" && midNode.graph.links[42].origin_slot === 2, "serialize/prompt roundtrip can compact again");
 
+// Legacy auto-generated None label is relabeled only on the designated None option.
+const legacyNone = {
+  version: 1,
+  theme_id: "theme_1",
+  none_option_id: "option_2",
+  options: [
+    { option_id: "option_1", label: LEGACY_DEFAULT_NONE_TEXT, description: "user option", tags: ["keep"] },
+    { option_id: "option_2", label: LEGACY_DEFAULT_NONE_TEXT, description: LEGACY_DEFAULT_NONE_TEXT, tags: [LEGACY_DEFAULT_NONE_TEXT] },
+  ],
+};
+const ensuredLegacy = ensureDefaultNoneOption(JSON.parse(JSON.stringify(legacyNone)));
+assert(ensuredLegacy.changed === true && ensuredLegacy.model.options[1].label === "None", "auto-generated None label is relabeled");
+assert(ensuredLegacy.model.options[1].description === "None", "auto-generated None description is relabeled");
+assert(ensuredLegacy.model.options[1].tags[0] === LEGACY_DEFAULT_NONE_TEXT, "None tags are not rewritten");
+assert(ensuredLegacy.model.options[0].label === LEGACY_DEFAULT_NONE_TEXT, "user option text is left alone");
+assert(legacyNone.options[1].label === LEGACY_DEFAULT_NONE_TEXT, "ensure does not mutate the caller's copy in this test fixture path");
+const customNone = ensureDefaultNoneOption({
+  none_option_id: "option_2",
+  options: [
+    { option_id: "option_1", label: "bikini" },
+    { option_id: "option_2", label: LEGACY_DEFAULT_NONE_TEXT, description: "Not on the list", tags: [] },
+  ],
+});
+assert(customNone.model.options[1].label === "None" && customNone.model.options[1].description === "Not on the list", "only the exact default field is rewritten");
+assert(!relabelLegacyDefaultNoneOption({ label: "None of these", description: "custom" }), "user-typed None text is not relabeled");
+
+const labelModel = {
+  version: 1,
+  theme_id: "outfit",
+  title: "Outfit",
+  instructions: "Choose.",
+  select_mode: "single",
+  none_option_id: "option_2",
+  options: [
+    { option_id: "option_1", label: "bikini", description: "" },
+    { option_id: "option_2", label: "None", description: "" },
+    { option_id: "option_3", label: "dress", description: "" },
+  ],
+};
+const labelPlan = planOptionOutputs(JSON.stringify(labelModel));
+const labelNode = {
+  id: 31,
+  widgets: [{ name: "theme_json", value: JSON.stringify(labelModel) }],
+  outputs: [
+    { name: "bikini (option_1)", type: "S1_DECISION", links: [51], s1OptionId: "option_1", s1PromptIndex: 0 },
+    { name: "None (option_2)", type: "S1_DECISION", links: [52], s1OptionId: "option_2", s1PromptIndex: 1 },
+    { name: "dress (option_3)", type: "S1_DECISION", links: [53], s1OptionId: "option_3", s1PromptIndex: 2 },
+    { name: "report_json", type: "STRING", links: [54] },
+  ],
+  graph: {
+    links: {
+      51: { id: 51, origin_id: 31, origin_slot: 0, target_id: 32, target_slot: 0, type: "S1_DECISION" },
+      52: { id: 52, origin_id: 31, origin_slot: 1, target_id: 32, target_slot: 1, type: "S1_DECISION" },
+      53: { id: 53, origin_id: 31, origin_slot: 2, target_id: 32, target_slot: 2, type: "S1_DECISION" },
+      54: { id: 54, origin_id: 31, origin_slot: 3, target_id: 33, target_slot: 0, type: "STRING" },
+    },
+  },
+};
+expandOptionOutputs(labelNode);
+relinkOptionSlots(labelNode, labelPlan.slots);
+assert(labelNode.outputs[0].name === "bikini (option_1)" && labelNode.outputs[0].label === "bikini", "relink name unchanged");
+assert(labelNode.outputs[1].name === "None (option_2)" && labelNode.outputs[1].label === "None", "None label has no option_id");
+assert(labelNode.outputs[2].name === "dress (option_3)" && labelNode.outputs[2].localized_name === "dress", "dress localized_name");
+assert(labelNode.outputs[0].s1OptionId === "option_1" && labelNode.outputs[0].s1PromptIndex === 0, "prompt index 0 kept");
+assert(labelNode.outputs[1].s1OptionId === "option_2" && labelNode.outputs[1].s1PromptIndex === 1, "mid-id None keeps prompt index 1");
+assert(labelNode.graph.links[51].origin_slot === 0 && labelNode.graph.links[52].origin_slot === 1 && labelNode.graph.links[53].origin_slot === 2, "links stay on prompt indexes after relink");
+compactOptionOutputs(labelNode, "option_2");
+assert(labelNode.outputs.map((output) => output.label || output.name).join(",") === "bikini,dress,None,report_json", "compact visible labels are names only, None last");
+assert(labelNode.outputs[0].name === "bikini (option_1)" && labelNode.outputs[2].name === "None (option_2)", "compact leaves internal slot names");
+assert(labelNode.graph.links[52].origin_slot === 2 && labelNode.graph.links[53].origin_slot === 1, "compact remaps visual origins only");
+expandOptionOutputs(labelNode);
+assert(labelNode.outputs[0].label === "bikini" && labelNode.outputs[1].label === "None" && labelNode.outputs[2].label === "dress", "expand keeps labels");
+assert(labelNode.outputs[0].name === "bikini (option_1)" && labelNode.outputs[1].s1PromptIndex === 1, "expand restores names and prompt index");
+assert(labelNode.graph.links[52].origin_slot === 1 && labelNode.graph.links[53].origin_slot === 2, "expand restores link slots");
+const snapshot = labelNode.outputs.map((output) => ({
+  name: output?.name,
+  type: output?.type,
+  links: output?.links,
+  localized_name: output?.localized_name,
+  label: output?.label,
+  s1OptionId: output?.s1OptionId,
+  s1PromptIndex: output?.s1PromptIndex,
+}));
+assert(snapshot[0].name === "bikini (option_1)" && snapshot[0].label === "bikini" && snapshot[0].localized_name === "bikini", "serialize snapshot has name+label");
+assert(snapshot[1].s1OptionId === "option_2" && snapshot[1].s1PromptIndex === 1 && snapshot[1].links[0] === 52, "serialize keeps id, index, links");
+compactOptionOutputs(labelNode, "option_2");
+assert(labelNode.outputs[2].s1OptionId === "option_2" && labelNode.outputs[2].label === "None", "roundtrip compact still labeled None");
+
+// Node size policy: grow/shrink with content, preserve user width, keep user height floor.
+const grew = nextEditorNodeSize({ currentWidth: 420, currentHeight: 120, minWidth: 420, minHeight: 80, contentHeight: 200 });
+assert(grew.width === 420 && grew.height === 200, "height grows with content");
+const shrunk = nextEditorNodeSize({ currentWidth: 420, currentHeight: 200, minWidth: 420, minHeight: 80, contentHeight: 100 });
+assert(shrunk.width === 420 && shrunk.height === 100, "height shrinks when chips/content shrink");
+const wide = nextEditorNodeSize({ currentWidth: 640, currentHeight: 200, minWidth: 420, minHeight: 80, contentHeight: 100, userMinWidth: 640 });
+assert(wide.width === 640 && wide.height === 100, "manually enlarged width is preserved while height can shrink");
+const tall = nextEditorNodeSize({ currentWidth: 420, currentHeight: 400, minWidth: 420, minHeight: 80, contentHeight: 100, userMinHeight: 400 });
+assert(tall.width === 420 && tall.height === 400, "does not shrink below a user-set height");
+const growPastUser = nextEditorNodeSize({ currentWidth: 420, currentHeight: 400, minWidth: 420, minHeight: 80, contentHeight: 500, userMinHeight: 400 });
+assert(growPastUser.height === 500, "content can still grow past a user-set height");
+assert(measureHostHeight(null, 80) === 80, "measure falls back when no host");
+assert(measureHostHeight({ scrollHeight: 24, offsetHeight: 20, getBoundingClientRect: () => ({ height: 22 }) }, 0) === 24, "measure uses the largest host height");
+
+const sized = { size: [420, 120], setSize(next) { this.size = next; this.sets = (this.sets || 0) + 1; } };
+installEditorSizeGuard(sized);
+applyEditorNodeSize(sized, { minWidth: 420, minHeight: 80, contentHeight: 220 });
+assert(sized.size[0] === 420 && sized.size[1] === 220, "apply grows the node to content");
+applyEditorNodeSize(sized, { minWidth: 420, minHeight: 80, contentHeight: 140 });
+assert(sized.size[1] === 140, "apply shrinks back when content shrinks");
+sized.onResize([640, 360]);
+assert(sized.__s1UserMinWidth === 640 && sized.__s1UserMinHeight === 360, "user resize is recorded");
+applyEditorNodeSize(sized, { minWidth: 420, minHeight: 80, contentHeight: 140 });
+assert(sized.size[0] === 640 && sized.size[1] === 360, "later auto size keeps the user width and height floor");
+sized.__s1AutoSizing = true;
+sized.onResize([640, 200]);
+sized.__s1AutoSizing = false;
+assert(sized.__s1UserMinHeight === 360, "auto setSize does not overwrite the user height floor");
+
+// Row context menu: stop native Vue/canvas menu only on rows, never on left-click.
+function fakeEvent(type, button, extra) {
+  return {
+    type,
+    button,
+    prevented: false,
+    stopped: false,
+    immediate: false,
+    preventDefault() { this.prevented = true; },
+    stopPropagation() { this.stopped = true; },
+    stopImmediatePropagation() { this.immediate = true; },
+    ...(extra || {}),
+  };
+}
+function fakeEl() {
+  const listeners = [];
+  return {
+    listeners,
+    addEventListener(type, fn, opts) { listeners.push({ type, fn, capture: Boolean(opts === true || (opts && opts.capture)) }); },
+    removeEventListener(type, fn) { const i = listeners.findIndex((item) => item.type === type && item.fn === fn); if (i >= 0) listeners.splice(i, 1); },
+    dispatch(type, event) {
+      for (const item of listeners.filter((entry) => entry.type === type && entry.capture)) item.fn(event);
+      for (const item of listeners.filter((entry) => entry.type === type && !entry.capture)) item.fn(event);
+    },
+    getBoundingClientRect() { return this.box || { left: 0, top: 0, right: 0, bottom: 0 }; },
+  };
+}
+const ev = fakeEvent("contextmenu", 2);
+stopRowContextMenuEvent(ev);
+assert(ev.prevented && ev.stopped && ev.immediate, "row contextmenu is fully stopped");
+assert(isRightClickEvent(fakeEvent("pointerdown", 2)) && !isRightClickEvent(fakeEvent("pointerdown", 0)), "only button 2 counts as right-click");
+const row = fakeEl();
+let opened = 0;
+bindRowContextMenu(row, () => { opened += 1; });
+const ctx = fakeEvent("contextmenu", 2);
+row.dispatch("contextmenu", ctx);
+assert(opened === 1 && ctx.prevented && ctx.stopped && ctx.immediate, "capture contextmenu opens only the custom menu");
+const left = fakeEvent("pointerdown", 0);
+row.dispatch("pointerdown", left);
+assert(opened === 1 && !left.prevented && !left.stopped, "left-click is not stopped");
+const rightDown = fakeEvent("pointerdown", 2);
+row.dispatch("pointerdown", rightDown);
+assert(rightDown.stopped && rightDown.immediate && !rightDown.prevented, "right pointerdown stops bubble without preventDefault");
+
+const menuNode = { __s1RowMenuEls: [], getExtraMenuOptions() { return ["native"]; } };
+const hit = fakeEl();
+hit.box = { left: 10, top: 10, right: 80, bottom: 40 };
+registerRowMenuElement(menuNode, hit);
+assert(hitTestNodeRows(menuNode, { clientX: 20, clientY: 20 }), "hit-test finds a row");
+assert(!hitTestNodeRows(menuNode, { clientX: 200, clientY: 200 }), "hit-test misses elsewhere on the node");
+assert(shouldSuppressNativeNodeMenu(menuNode, { clientX: 20, clientY: 20 }), "native menu suppressed on a row");
+assert(!shouldSuppressNativeNodeMenu(menuNode, { clientX: 200, clientY: 200 }), "native menu kept off-row");
+installNativeNodeMenuSuppress(menuNode);
+assert(JSON.stringify(menuNode.getExtraMenuOptions({}, [], { clientX: 20, clientY: 20 })) === "[]", "getExtraMenuOptions is empty on a row hit");
+assert(JSON.stringify(menuNode.getExtraMenuOptions({}, [], { clientX: 200, clientY: 200 })) === JSON.stringify(["native"]), "getExtraMenuOptions unchanged off-row");
+clearRowMenuElements(menuNode);
+assert(!shouldSuppressNativeNodeMenu(menuNode, { clientX: 20, clientY: 20 }), "cleared rows no longer suppress");
+
 assert(JSON.stringify(tokenizeTags("bikini, Bikini, style, , style")) === JSON.stringify(["bikini", "style"]), "tags trim and dedupe case-insensitively");
 assert(JSON.stringify(tokenizeTags(["foo", "bar", "foo"])) === JSON.stringify(["foo", "bar"]), "tag arrays dedupe");
 assert(JSON.stringify(addTagToken(["bikini"], " Bikini ")) === JSON.stringify(["bikini"]), "adding a duplicate is a no-op");
@@ -725,6 +996,79 @@ const swapped = applyLoraChooserAction(picked.loras, "swap", "Other/foo.safetens
 assert(swapped.changed && swapped.loras[0].name === "Other/foo.safetensors", "swap changes only the name");
 assert(swapped.loras[0].strength_model === 1 && swapped.loras.length === 1, "swap does not add a row or reset extras");
 assert(!isUsableLoraName("None") && newLoraRowFromPick("None") === null, "None is not a usable LoRA pick");
+
+assert(normalizeLoraPath("Anima\\sub\\nested.safetensors") === "Anima/sub/nested.safetensors", "backslash paths normalize to slashes");
+assert(loraNameFromMenuValue("Anima\\xxx.safetensors") === "Anima/xxx.safetensors", "menu string values normalize separators");
+assert(loraNameFromMenuValue({ s1LoraName: "Anima\\xxx.safetensors", content: "xxx.safetensors" }) === "Anima/xxx.safetensors", "menu object values normalize separators");
+
+const nestedNames = [
+  "root.safetensors",
+  "Anima/anima-turbo-lora-v0.2.safetensors",
+  "Anima/sub/nested.safetensors",
+];
+const rawMenu = loraChooserMenuItems(nestedNames);
+const anima = rawMenu.find((item) => item.has_submenu && String(item.content).includes("Anima"));
+assert(anima && anima.submenu && anima.submenu.callback === undefined, "raw submenu does not inherit a parent callback");
+const nestedLeaf = anima.submenu.options.find((item) => item.has_submenu).submenu.options[0];
+assert(nestedLeaf.s1LoraName === "Anima/sub/nested.safetensors", "multi-level leaves keep the full path");
+
+// Model LiteGraph 1.57.6: a submenu is `new ContextMenu(options, { callback: submenu.callback })`
+// and does not inherit the parent menu's options.callback.
+function liteGraph1576Pick(items, trail, rootCallback) {
+  let menuCallback = rootCallback;
+  let entries = items;
+  let current = null;
+  for (const step of trail) {
+    current = typeof step === "number" ? entries[step] : entries.find(step);
+    if (!current) return { picked: null, called: 0 };
+    if (current.has_submenu || current.submenu) {
+      menuCallback = current.submenu ? current.submenu.callback : undefined;
+      entries = current.submenu && current.submenu.options || [];
+    }
+  }
+  let called = 0;
+  let picked = null;
+  const receive = (value) => { called += 1; picked = loraNameFromMenuValue(value); };
+  if (typeof menuCallback === "function") receive(current);
+  if (typeof current.callback === "function" && current.callback !== menuCallback) receive(current);
+  return { picked, called };
+}
+
+let rootCalls = 0;
+const rawPick = liteGraph1576Pick(rawMenu, [
+  (item) => item.has_submenu,
+  (item) => item.has_submenu,
+  (item) => item.s1LoraName && item.s1LoraName.includes("nested"),
+], () => { rootCalls += 1; });
+assert(rawPick.called === 0 && rootCalls === 0, "without injected callback, a nested LiteGraph pick invokes nothing");
+
+let injected = "";
+const wiredMenu = withLoraChooserCallback(rawMenu, (value) => { injected = loraNameFromMenuValue(value); });
+const wiredAnima = wiredMenu.find((item) => item.has_submenu);
+assert(typeof wiredAnima.submenu.callback === "function", "injected callback is copied onto the first submenu");
+assert(typeof wiredAnima.submenu.options.find((item) => item.has_submenu).submenu.callback === "function", "injected callback is copied onto nested submenus");
+const wiredNested = wiredAnima.submenu.options.find((item) => item.has_submenu).submenu.options[0];
+assert(typeof wiredNested.callback === "function" && wiredNested.s1LoraName === "Anima/sub/nested.safetensors", "nested leaf gets the callback and full path");
+const wiredPick = liteGraph1576Pick(wiredMenu, [
+  (item) => item.has_submenu,
+  (item) => item.has_submenu,
+  (item) => item.s1LoraName && item.s1LoraName.includes("nested"),
+], wiredAnima.submenu.callback);
+// The root callback is not used at the nested menu; submenu.callback is.
+assert(wiredPick.called >= 1 && wiredPick.picked === "Anima/sub/nested.safetensors", "with injected callback, a nested LiteGraph pick returns the full path");
+assert(injected === "Anima/sub/nested.safetensors" || wiredPick.picked === "Anima/sub/nested.safetensors", "nested pick reaches the chooser callback");
+
+const addedNested = applyLoraChooserAction([], "add", { s1LoraName: "Anima/sub/nested.safetensors", content: "nested.safetensors" });
+assert(addedNested.changed && addedNested.loras[0].name === "Anima/sub/nested.safetensors", "adding a multi-level folder pick stores the full path");
+assert(addedNested.row.enabled_default === true && addedNested.row.strength_model === 1, "nested add still uses default-on and 1.00");
+const addedSlash = applyLoraChooserAction([], "add", "Anima\\anima-turbo-lora-v0.2.safetensors");
+assert(addedSlash.changed && addedSlash.loras[0].name === "Anima/anima-turbo-lora-v0.2.safetensors", "add normalizes backslash separators");
+const swappedNested = applyLoraChooserAction(addedNested.loras, "swap", { s1LoraName: "Anima\\anima-turbo-lora-v0.2.safetensors" }, 0);
+assert(swappedNested.changed && swappedNested.loras[0].name === "Anima/anima-turbo-lora-v0.2.safetensors", "swap of a folder pick stores the normalized full path");
+assert(swappedNested.loras.length === 1, "swap does not add a row");
+const cancelledNested = applyLoraChooserAction(addedNested.loras, "add", { has_submenu: true, content: "📁 Anima" });
+assert(!cancelledNested.changed && cancelledNested.loras.length === 1, "picking a folder item still adds no row");
+assert(!applyLoraChooserAction(addedNested.loras, "add", "").changed, "cancel / empty pick still adds no row");
 
 console.log("ok");
 """
@@ -1396,7 +1740,8 @@ class NodeTests(unittest.TestCase):
         self.assertIn("Typed names still work.", editors)
         self.assertIn("lora_id", editors)
         self.assertIn("theme_id and option_id are assigned automatically", editors)
-        self.assertIn("以上皆非", editors)
+        self.assertIn("The last option is ${DEFAULT_NONE_LABEL}", editors)
+        self.assertNotIn("預設啟用", editors)
         self.assertNotIn('field("lora_id"', editors)
         self.assertNotIn('field("theme_id"', editors)
         self.assertNotIn('field("option_id"', editors)
@@ -1454,11 +1799,16 @@ class NodeTests(unittest.TestCase):
         lora_node = (ROOT / "js" / "s1_lora_node.js").read_text(encoding="utf-8")
         self.assertIn("addDOMWidget", lora_node)
         self.assertNotIn("Toggle All", lora_node)
-        self.assertIn("預設啟用", lora_node)
+        self.assertIn("Default On", lora_node)
+        self.assertNotIn("預設啟用", lora_node)
         self.assertNotIn("s1-lora-info", lora_node)
         self.assertNotIn("is-off", lora_node)
         self.assertIn("＋ Add Lora", lora_node)
         self.assertIn("showLoraChooser", lora_node)
+        self.assertIn("withLoraChooserCallback", lora_node)
+        self.assertIn("submenu.callback", lora_node)
+        self.assertIn("export function withLoraChooserCallback", model_js)
+        self.assertIn("export function normalizeLoraPath", model_js)
         self.assertIn('className: "dark"', lora_node)
         self.assertIn("LiteGraph", lora_node)
         self.assertIn("enabled_default", lora_node)
@@ -1473,6 +1823,28 @@ class NodeTests(unittest.TestCase):
         self.assertIn("Tags (Comma)", theme_node)
         self.assertIn("hideThemeJsonWidget", theme_node)
         self.assertIn("mountTagChips", theme_node)
+        self.assertIn("export function optionOutputLabels", model_js)
+        self.assertIn("output.label = visible", model_js)
+        self.assertIn("label || localized_name || name", model_js)
+        self.assertIn("flex-wrap: wrap", (ROOT / "js" / "s1_tag_chips.js").read_text(encoding="utf-8"))
+        self.assertNotIn("overflow-x: auto", (ROOT / "js" / "s1_tag_chips.js").read_text(encoding="utf-8"))
+        self.assertNotIn("flex-wrap: nowrap", (ROOT / "js" / "s1_tag_chips.js").read_text(encoding="utf-8"))
+        self.assertIn("nextEditorNodeSize", (ROOT / "js" / "s1_node_size.js").read_text(encoding="utf-8"))
+        self.assertIn("getHeight", theme_node)
+        self.assertIn("ResizeObserver", (ROOT / "js" / "s1_node_size.js").read_text(encoding="utf-8"))
+        self.assertIn("showNodeOptions", (ROOT / "js" / "s1_row_menu.js").read_text(encoding="utf-8"))
+        self.assertIn("bindRowContextMenu", theme_node)
+        self.assertIn("bindRowContextMenu", lora_node)
+        self.assertIn("stopImmediatePropagation", (ROOT / "js" / "s1_row_menu.js").read_text(encoding="utf-8"))
+        self.assertIn("processContextMenu", (ROOT / "js" / "s1_row_menu.js").read_text(encoding="utf-8"))
+        for name in ("s1_node_size.js", "s1_row_menu.js"):
+            extra_check = subprocess.run(
+                [node, "--check", str(ROOT / "js" / name)],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(extra_check.returncode, 0, extra_check.stderr)
         chips = (ROOT / "js" / "s1_tag_chips.js").read_text(encoding="utf-8")
         self.assertIn("Enter", chips)
         self.assertIn("Backspace", chips)
