@@ -28,6 +28,9 @@ import {
   syncCollectInputs,
   expandOptionOutputs,
   compactOptionOutputs,
+  applyOptionIndexRemap,
+  canonicalizeThemeOptions,
+  planThemeWrite,
 } from "./s1_model.js";
 import { installLoraLibraryNode } from "./s1_lora_node.js";
 import { installThemeNode } from "./s1_theme_node.js";
@@ -676,7 +679,7 @@ function renderThemeFields() {
   const theme = state.model;
   bodyEl.append(
     hint(
-      "theme_id and option_id are assigned automatically and shown in the card titles. They are not form fields. New and duplicated themes receive the next free theme_N on the graph before queue. A saved non-empty id stays when it does not collide. Existing option ids are kept. Decision sources still use those ids.",
+      "theme_id and option_id are assigned automatically and shown in the card titles. They are not form fields. New and duplicated themes receive the next free theme_N on the graph before queue. A saved non-empty id stays when it does not collide. option_id follows table order: option_N is row N and output slot N, None is last. Moving or deleting an option renumbers the ids and its wires follow it; the wires of a deleted option are disconnected. Older reports keep the ids they were written with.",
     ),
   );
   bodyEl.append(
@@ -832,6 +835,24 @@ function loadNode(node) {
   if (spec.kind === "theme") {
     const before = JSON.stringify(state.model);
     assignThemeDocument(state.model);
+    const probe = JSON.parse(JSON.stringify(state.model));
+    if (canonicalizeThemeOptions(probe).changed) {
+      // Legacy order/ids: write now (not through liveWrite, whose DOM read
+      // would still see the previous form) so the form shows option_N =
+      // row N and wires are remapped before any edit.
+      const write = planThemeWrite(state.raw, state.model);
+      if (write.ok) {
+        state.writing = true;
+        try {
+          writeWidget(node, widget, write.json);
+        } finally {
+          state.writing = false;
+        }
+        state.raw = write.json;
+        state.model = write.model;
+        syncOptionOutputs(node, write.remap);
+      }
+    }
     if (JSON.stringify(state.model) !== before) scheduleLiveWrite();
   }
   state.clean = true;
@@ -914,7 +935,13 @@ function liveWrite() {
     state.model = parsed.model;
   }
   const beforeIds = idSignature();
-  const result = commitModel(state.kind, state.model);
+  // Theme: canonicalize a copy (option_N = row N, None last) and plan the
+  // wire remap against the widget value the outputs were built from. The
+  // draft model is only replaced after it validates.
+  const themeWrite = state.kind === "theme" ? planThemeWrite(widgetText(widget), state.model) : null;
+  const result = themeWrite
+    ? (themeWrite.ok ? { ok: true, json: themeWrite.json, model: themeWrite.model } : { ok: false, error: themeWrite.error })
+    : commitModel(state.kind, state.model);
   if (!result.ok) {
     state.clean = false;
     state.invalidPaths = fieldPathsFromError(result.error);
@@ -935,10 +962,10 @@ function liveWrite() {
   }
   state.raw = result.json;
   state.clean = true;
-  const idsChanged = idSignature() !== beforeIds;
   state.model = result.model;
+  const idsChanged = idSignature() !== beforeIds;
   announceThemeConflict(state.node);
-  if (state.kind === "theme") syncOptionOutputs(state.node);
+  if (state.kind === "theme") syncOptionOutputs(state.node, themeWrite ? themeWrite.remap : null);
   if (!hadModel || idsChanged) {
     renderAll();
     return;
@@ -1003,14 +1030,27 @@ function onClick(event) {
       if (state.kind === "theme") assignThemeDocument(state.model);
     }
     renderBody();
+    if (state.kind === "theme" && target.dataset.list === "options") {
+      cancelLiveWrite();
+      liveWrite();
+      return;
+    }
     scheduleLiveWrite();
     return;
   }
   if (act === "remove" || act === "up" || act === "down") {
     syncFromDom();
+    if (state.kind === "theme") flushLiveWrite();
     const list = getByPath(root, target.dataset.list);
     const index = Number(target.dataset.index);
     if (!Array.isArray(list) || !Number.isInteger(index)) return;
+    const isNoneItem = (item) => Boolean(item && (item.option_id === state.model?.none_option_id || isNoneLikeOption(item)));
+    if (state.kind === "theme" && target.dataset.list === "options") {
+      // None stays last: it never moves and nothing moves below it.
+      if (isNoneItem(list[index])) return;
+      if (act === "up" && isNoneItem(list[index - 1])) return;
+      if (act === "down" && isNoneItem(list[index + 1])) return;
+    }
     if (act === "remove") {
       const item = list[index];
       if (item && (item.option_id === state.model?.none_option_id || isNoneLikeOption(item))) return;
@@ -1021,6 +1061,13 @@ function onClick(event) {
     if (state.kind === "lora") assignLoraIds(state.model);
     if (state.kind === "theme") assignThemeDocument(state.model);
     renderBody();
+    if (state.kind === "theme" && target.dataset.list === "options") {
+      // Commit structural theme edits at once so ids are renumbered and wires
+      // remapped one step at a time (a later add never reuses a deleted id).
+      cancelLiveWrite();
+      liveWrite();
+      return;
+    }
     scheduleLiveWrite();
   }
 }
@@ -1330,15 +1377,27 @@ function applyThemePlan(nodes) {
     const node = byKey.get(assignment.key);
     if (!node || typeof assignment.themeJson !== "string") continue;
     let nextJson = assignment.themeJson;
+    let remap = null;
     const parsed = parseEditorDocument("theme", nextJson);
     if (parsed.ok) {
       const before = nextJson;
-      assignThemeDocument(parsed.model);
-      const committed = commitModel("theme", parsed.model);
-      if (committed.ok) nextJson = committed.json;
+      // Same canonical ids as the on-node editor (option_N = row N, None
+      // last). The remap is planned against the widget value the outputs
+      // were built from, so wires follow their option.
+      const write = planThemeWrite(widgetText(findWidget(node, "theme_json")), parsed.model);
+      if (write.ok) {
+        nextJson = write.json;
+        remap = write.remap;
+      }
       if (nextJson !== before) assignment.changed = true;
     }
-    if (assignment.changed) writeNamed(node, "theme_json", nextJson);
+    if (assignment.changed) {
+      writeNamed(node, "theme_json", nextJson);
+      if (remap && remap.ok && !remap.identity) {
+        expandOptionOutputs(node);
+        applyOptionIndexRemap(node, remap);
+      }
+    }
   }
   const reasons = new Map();
   for (const conflict of plan.conflicts) {
@@ -1360,12 +1419,13 @@ function applyThemePlan(nodes) {
 // ignores slot.hidden, so compacting is what hides them. report_json stays
 // at prompt index 32 (expanded before graphToPrompt / serialize). Connected
 // sockets are never removed. output.links is never assigned.
-function syncOptionOutputs(node) {
+function syncOptionOutputs(node, remap = null) {
   if (!isThemeNode(node)) return;
   orderThemePromptInputs(node);
   const plan = planOptionOutputs(widgetText(findWidget(node, "theme_json")));
   if (!plan.ok || !Array.isArray(plan.slots)) return;
   expandOptionOutputs(node);
+  if (remap && remap.ok && !remap.identity) applyOptionIndexRemap(node, remap);
   relinkOptionSlots(node, plan.slots);
   compactOptionOutputs(node);
   fitNode(node);

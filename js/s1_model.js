@@ -1324,7 +1324,10 @@ export function blankOption() {
   return { option_id: "", label: "", description: "", tags: [] };
 }
 
-/** Display order: user options in array order, then None last. Array/prompt indexes are unchanged. */
+/**
+ * Display order: user options in array order, then None last. Does not
+ * rewrite the array; canonicalizeThemeOptions makes the array match it.
+ */
 export function optionDisplayOrder(options, noneOptionId) {
   const list = Array.isArray(options) ? options.filter(Boolean) : [];
   const noneId = String(noneOptionId || "").trim();
@@ -1340,9 +1343,11 @@ export function optionDisplayOrder(options, noneOptionId) {
 }
 
 /**
- * Append a new option after existing ones so None keeps its option_id and
- * array/prompt index when it sits in the middle. nextOptionId fills the
- * smallest free option_N and will not collide with None's id.
+ * Add a blank option as the last user row. Writers then call
+ * canonicalizeThemeOptions, so the new row gets option_N for its table row
+ * and None moves to the last id. nextOptionId picks an id that is not in
+ * the current document, so it can never be mistaken for a deleted option
+ * when wires are remapped.
  */
 export function addThemeOption(model) {
   if (!model || typeof model !== "object") return { ok: false, error: "invalid theme" };
@@ -1355,10 +1360,18 @@ export function addThemeOption(model) {
   const existing = model.options.map((option) => option?.option_id).filter(Boolean);
   const option = blankOption();
   option.option_id = nextOptionId(existing);
+  // Appended: display order (user rows, then None) shows it as the last
+  // user row; canonicalizeThemeOptions then moves None back to the end.
   model.options.push(option);
   return { ok: true, model, option };
 }
 
+/**
+ * Remove a non-None option. Writers then call canonicalizeThemeOptions, so
+ * later rows move up one id (option_N stays table row N), and
+ * applyOptionIndexRemap disconnects the wires of the deleted socket and
+ * moves the wires of later options with them.
+ */
 export function deleteThemeOption(model, optionId) {
   if (!model || !Array.isArray(model.options)) return { ok: false, error: "invalid theme" };
   ensureDefaultNoneOption(model);
@@ -1372,7 +1385,11 @@ export function deleteThemeOption(model, optionId) {
   return { ok: true, model };
 }
 
-/** Move a non-None option among non-None slots. None stays at its array index. */
+/**
+ * Swap a non-None option with its neighbour among non-None rows. None never
+ * moves. Writers then call canonicalizeThemeOptions, so the two rows also
+ * swap option_id ("swap position" semantics) and wires follow the option.
+ */
 export function moveThemeOption(model, optionId, direction) {
   if (!model || !Array.isArray(model.options)) return { ok: false, moved: false };
   ensureDefaultNoneOption(model);
@@ -1393,6 +1410,254 @@ export function moveThemeOption(model, optionId, direction) {
   options[left] = options[right];
   options[right] = temp;
   return { ok: true, moved: true, model };
+}
+
+export const OPTION_ID_PREFIX = "option_";
+
+/** option_N for table row N (1-based). */
+export function canonicalOptionId(row) {
+  return `${OPTION_ID_PREFIX}${row}`;
+}
+
+/**
+ * True when the array is in table order (None last) and option ids are
+ * option_1..option_N in that order, with none_option_id on the last row.
+ */
+export function isCanonicalThemeOptions(model) {
+  if (!model || !Array.isArray(model.options)) return true;
+  const noneId = String(model.none_option_id || "");
+  const list = model.options;
+  for (let index = 0; index < list.length; index += 1) {
+    const option = list[index];
+    if (!option || String(option.option_id || "") !== canonicalOptionId(index + 1)) return false;
+  }
+  if (noneId) {
+    const last = list[list.length - 1];
+    if (!last || String(last.option_id || "") !== noneId) return false;
+  }
+  return true;
+}
+
+/**
+ * "Swap position" ids: put the options in table order (user rows in array
+ * order, None last) and renumber them option_1..option_N so option_N is
+ * always table row N and the backend slot N-1. None gets the last id.
+ *
+ * Mutates `model`. Returns `sourceIds[i]`, the option_id that row i had
+ * before this call ("" for a row that had none), and `nextIds[i]`, the id
+ * it has now. Idempotent: a canonical model returns changed false.
+ * Callers pair this with planOptionIndexRemap / applyOptionIndexRemap so
+ * graph.links follow the options. Theme ids are not touched.
+ */
+export function canonicalizeThemeOptions(model) {
+  if (!model || typeof model !== "object" || Array.isArray(model)) {
+    return { ok: false, changed: false, sourceIds: [], nextIds: [], idMap: new Map() };
+  }
+  if (!Array.isArray(model.options)) model.options = [];
+  ensureDefaultNoneOption(model);
+  const beforeIds = model.options.map((option) => String(option?.option_id ?? ""));
+  const beforeNone = String(model.none_option_id || "");
+  const ordered = optionDisplayOrder(model.options, beforeNone);
+  const sourceIds = ordered.map((option) => String(option.option_id ?? ""));
+  const nextIds = [];
+  const idMap = new Map();
+  let nextNone = "";
+  ordered.forEach((option, index) => {
+    const next = canonicalOptionId(index + 1);
+    const source = sourceIds[index];
+    if (source) idMap.set(source, next);
+    if (beforeNone && source === beforeNone) nextNone = next;
+    option.option_id = next;
+    nextIds.push(next);
+  });
+  model.options = ordered;
+  if (nextNone) model.none_option_id = nextNone;
+  const afterNone = String(model.none_option_id || "");
+  const changed =
+    beforeIds.length !== nextIds.length ||
+    beforeIds.some((id, index) => id !== nextIds[index]) ||
+    beforeNone !== afterNone;
+  return { ok: true, changed, sourceIds, nextIds, idMap };
+}
+
+/**
+ * Map old prompt/output indexes to new ones for a theme write.
+ *
+ * `previousThemeJson` is the theme_json the node's outputs were planned
+ * from (the widget value before the write). Its option array index is the
+ * backend slot index (the same ensureDefaultNoneOption step as
+ * planOptionOutputs). `sourceIds` / `nextIds` come from
+ * canonicalizeThemeOptions on the edited model. An old option whose id is
+ * no longer present maps to -1 (deleted). Invalid previous JSON gives an
+ * empty map, so nothing is moved.
+ */
+export function planOptionIndexRemap(previousThemeJson, sourceIds, nextIds) {
+  const empty = { ok: false, identity: true, indexMap: new Map(), removed: [], nextIds: Array.isArray(nextIds) ? nextIds.slice() : [] };
+  const text = typeof previousThemeJson === "string" ? previousThemeJson : JSON.stringify(previousThemeJson ?? null);
+  if (!text || !Array.isArray(sourceIds)) return empty;
+  const parsed = parseEditorDocument("theme", text);
+  if (!parsed.ok) return empty;
+  ensureDefaultNoneOption(parsed.model);
+  const oldIds = (parsed.model.options || []).map((option) => String(option?.option_id ?? ""));
+  const newIndex = new Map();
+  sourceIds.forEach((id, index) => {
+    if (id && !newIndex.has(String(id))) newIndex.set(String(id), index);
+  });
+  const indexMap = new Map();
+  const removed = [];
+  let identity = true;
+  oldIds.forEach((id, index) => {
+    if (!id || index >= MAX_OPTION_OUTPUTS) return;
+    if (newIndex.has(id)) {
+      const to = newIndex.get(id);
+      indexMap.set(index, to);
+      if (to !== index) identity = false;
+    } else {
+      indexMap.set(index, -1);
+      removed.push(index);
+      identity = false;
+    }
+  });
+  const ids = Array.isArray(nextIds) ? nextIds.slice() : sourceIds.map((_, index) => canonicalOptionId(index + 1));
+  return { ok: true, identity, indexMap, removed, nextIds: ids };
+}
+
+function findGraphNode(graph, id) {
+  if (!graph || id == null) return null;
+  if (typeof graph.getNodeById === "function") {
+    const found = graph.getNodeById(id);
+    if (found) return found;
+  }
+  const nodes = graph._nodes || graph.nodes;
+  if (!Array.isArray(nodes)) return null;
+  return nodes.find((item) => item && sameNodeId(item.id, id)) || null;
+}
+
+function graphHasLink(graph, link, id) {
+  const links = graph?.links;
+  if (!links) return false;
+  if (typeof links.get === "function" && typeof links.has === "function") {
+    return links.has(id) || links.has(Number(id)) || links.has(String(id));
+  }
+  if (Array.isArray(links)) return links.includes(link);
+  return Boolean(links[id]);
+}
+
+/**
+ * Disconnect one wire of a deleted option socket. graph.removeLink is
+ * LiteGraph's own path (target disconnectInput). The plain-object branch
+ * covers test doubles and older shapes. output.links is never assigned.
+ */
+function removeOptionWire(node, job) {
+  const graph = node.graph;
+  if (!graph) return false;
+  if (typeof graph.removeLink === "function") {
+    graph.removeLink(job.id);
+    return !graphHasLink(graph, job.link, job.id);
+  }
+  const links = graph.links;
+  if (links && typeof links.delete === "function" && typeof links.get === "function") {
+    links.delete(job.id);
+    links.delete(Number(job.id));
+    links.delete(String(job.id));
+  } else if (Array.isArray(links)) {
+    const index = links.indexOf(job.link);
+    if (index >= 0) links[index] = null;
+  } else if (links && typeof links === "object") {
+    delete links[job.id];
+  }
+  const target = findGraphNode(graph, job.targetId);
+  const slot = asSlot(job.targetSlot);
+  const input = target && Array.isArray(target.inputs) && slot != null ? target.inputs[slot] : null;
+  if (input && input.link != null && String(input.link) === String(job.id)) input.link = null;
+  forgetPlainLink(node.outputs?.[job.from], job.id);
+  return true;
+}
+
+/**
+ * Apply planOptionIndexRemap to a theme node (expanded prompt indexes).
+ *
+ * graph.links entries from this node move origin_slot / originSlot to the
+ * option's new index, so a downstream wire follows its option. Wires of a
+ * deleted option are disconnected, because its old index now belongs to a
+ * different option. Wires on unmapped pads and report_json (32) stay put.
+ * Output stamps (s1OptionId) are rewritten to the new ids so the
+ * relinkOptionSlots pass that follows does not move anything again.
+ * output.links is never assigned; plain-array mirrors are spliced only when
+ * there is no setter (same helpers as relinkOptionSlots).
+ */
+export function applyOptionIndexRemap(node, remap) {
+  const result = { ok: false, moved: 0, removed: 0, stuck: 0 };
+  if (!node || !remap || !remap.ok) return result;
+  result.ok = true;
+  if (remap.identity) return result;
+  expandOptionOutputs(node);
+  const outputs = node.outputs;
+  const moves = [];
+  const removals = [];
+  if (node.graph) {
+    eachGraphLink(node.graph, (link) => {
+      const parts = linkParts(link);
+      if (!parts || !sameNodeId(parts.originId, node.id)) return;
+      const from = asSlot(parts.originSlot);
+      if (from == null || from < 0 || from >= REPORT_OUTPUT_INDEX) return;
+      if (!remap.indexMap.has(from)) return;
+      const to = remap.indexMap.get(from);
+      if (to < 0) {
+        removals.push({ link, id: parts.id, from, targetId: parts.targetId, targetSlot: parts.targetSlot });
+      } else if (to !== from) {
+        moves.push({ link, id: parts.id, from, to });
+      }
+    });
+  }
+  for (const job of removals) {
+    if (removeOptionWire(node, job)) result.removed += 1;
+    else result.stuck += 1;
+  }
+  if (result.stuck && typeof console !== "undefined") {
+    console.warn("[S1] could not disconnect a wire of a deleted option", result.stuck);
+  }
+  for (const job of moves) forgetPlainLink(outputs[job.from], job.id);
+  for (const job of moves) {
+    writeOriginSlot(job.link, job.to);
+    rememberPlainLink(ensureOutput(outputs, job.to, DECISION_TYPE), job.id);
+    result.moved += 1;
+  }
+  const ids = Array.isArray(remap.nextIds) ? remap.nextIds : [];
+  for (let index = 0; index < MAX_OPTION_OUTPUTS; index += 1) {
+    const output = ensureOutput(outputs, index, DECISION_TYPE);
+    output.s1OptionId = ids[index] || "";
+  }
+  return result;
+}
+
+/**
+ * One theme write: canonicalize a copy of `model`, commit it, and plan the
+ * index remap against `previousThemeJson`. Returns ok:false (and leaves
+ * the caller's model alone) when the draft does not validate.
+ */
+export function planThemeWrite(previousThemeJson, model) {
+  let draft;
+  try {
+    draft = JSON.parse(JSON.stringify(model ?? null));
+  } catch (exc) {
+    return { ok: false, error: exc.message || String(exc) };
+  }
+  if (!draft || typeof draft !== "object" || Array.isArray(draft)) return { ok: false, error: "invalid theme" };
+  assignThemeDocument(draft);
+  const canon = canonicalizeThemeOptions(draft);
+  const committed = commitModel("theme", draft);
+  if (!committed.ok) return { ok: false, error: committed.error };
+  const remap = planOptionIndexRemap(previousThemeJson, canon.sourceIds, canon.nextIds);
+  return {
+    ok: true,
+    json: committed.json,
+    model: committed.model,
+    changed: canon.changed,
+    sourceIds: canon.sourceIds,
+    nextIds: canon.nextIds,
+    remap,
+  };
 }
 
 export function blankClause() {

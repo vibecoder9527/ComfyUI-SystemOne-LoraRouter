@@ -5,9 +5,9 @@
 import { app } from "../../scripts/app.js";
 import {
   addThemeOption,
+  applyOptionIndexRemap,
   assignThemeDocument,
   collectGraphTags,
-  commitModel,
   compactOptionOutputs,
   DEFAULT_NONE_LABEL,
   deleteThemeOption,
@@ -18,6 +18,7 @@ import {
   orderThemePromptInputs,
   parseEditorDocument,
   planOptionOutputs,
+  planThemeWrite,
   relinkOptionSlots,
 } from "./s1_model.js";
 import { mountTagChips } from "./s1_tag_chips.js";
@@ -98,24 +99,31 @@ function readTheme(node) {
   return parsed.model;
 }
 
+// Every write canonicalizes option ids ("swap position" semantics):
+// option_N is always table row N and backend slot N-1, None last. The
+// remap is planned against the widget value the outputs were built from,
+// so a moved option keeps its downstream wires, later rows follow a
+// delete, and the deleted socket's own wires are disconnected. A legacy
+// document (e.g. None=option_2, dress=option_3) is normalized the same way
+// on configure; an already canonical one is left as is.
 function writeTheme(node, model) {
-  assignThemeDocument(model);
-  ensureDefaultNoneOption(model);
-  const committed = commitModel("theme", model);
-  if (!committed.ok) return false;
   const widget = findWidget(node, "theme_json");
-  if (widget) widget.value = committed.json;
-  syncThemeOutputs(node);
+  const previous = widget && widget.value != null ? String(widget.value) : "";
+  const planned = planThemeWrite(previous, model);
+  if (!planned.ok) return false;
+  if (widget) widget.value = planned.json;
+  syncThemeOutputs(node, planned.remap);
   node.setDirtyCanvas?.(true, true);
   node.graph?.setDirtyCanvas?.(true, true);
   return true;
 }
 
-function syncThemeOutputs(node) {
+function syncThemeOutputs(node, remap) {
   orderThemePromptInputs(node);
   const plan = planOptionOutputs(findWidget(node, "theme_json")?.value ?? "");
   if (!plan.ok || !Array.isArray(plan.slots)) return;
   expandOptionOutputs(node);
+  if (remap && remap.ok && !remap.identity) applyOptionIndexRemap(node, remap);
   relinkOptionSlots(node, plan.slots);
   const model = readTheme(node);
   compactOptionOutputs(node, model.none_option_id);

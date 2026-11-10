@@ -1862,7 +1862,7 @@ class NodeTests(unittest.TestCase):
         self.assertIn("lora_bindings was removed; selected options contribute tags", model_js)
         self.assertIn("fallback_option_id was removed and is not applied", model_js)
         live = editors[editors.index("function liveWrite(") : editors.index("function pollWidgets(")]
-        self.assertIn("syncOptionOutputs(state.node)", live)
+        self.assertIn("syncOptionOutputs(state.node, ", live)
         self.assertNotIn("enable_json", live)
         self.assertNotIn("positive", live)
         self.assertNotIn("negative", live)
