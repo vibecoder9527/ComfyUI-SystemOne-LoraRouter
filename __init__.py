@@ -26,6 +26,7 @@ from .nodes.lora_library import S1LoraLibrary
 from .nodes.settings import S1Settings
 from .nodes.theme import S1Theme, S1ThemeRoot
 from .nodes.theme_collect import S1ThemeCollect
+from .schema.execution_compat import patch_comfy_execution
 
 NODE_CLASS_MAPPINGS = {
     "S1LoraLibrary": S1LoraLibrary,
@@ -47,6 +48,9 @@ NODE_DISPLAY_NAME_MAPPINGS = {
 
 # ComfyUI serves every .js file in this directory as a frontend extension.
 WEB_DIRECTORY = "./js"
+
+# Optional ExecutionBlocker inputs would otherwise skip Theme Collect on 0.44.
+patch_comfy_execution()
 
 __all__ = [
     "NODE_CLASS_MAPPINGS",

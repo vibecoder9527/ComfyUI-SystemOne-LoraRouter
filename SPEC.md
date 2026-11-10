@@ -138,7 +138,7 @@ One theme object. A `{ "themes": [...] }` library is rejected.
 
 ## Theme Collect
 
-Inputs `a` and `b` are optional `S1_DECISION` sockets. The output is one `S1_DECISION` named `decision`. One wired branch is returned unchanged (`emitted_reason` stays whatever that slot emitted). Two real payloads merge with `emitted_reason=collected`. An `ExecutionBlocker` or missing optional input is ignored so a selected sibling can stay linked and Collect can run. Zero usable inputs raises `SchemaError`. Order is the first copy of each `theme_id`: every decision from `a`, then decisions from `b` whose id is not already kept. An identical later decision is dropped, so a shared ancestor is stored once and its tags are not doubled. Identical means status, enabled, selected ids, tags, select mode, option tag contributions, error, reason, and `raw` all match. A difference raises `SchemaError`.
+Inputs `a` and `b` are optional `S1_DECISION` sockets. The output is one `S1_DECISION` named `decision`. One wired branch is returned unchanged (`emitted_reason` stays whatever that slot emitted). Two real payloads merge with `emitted_reason=collected`. An `ExecutionBlocker` or missing optional input is ignored so a selected sibling can stay linked and Collect can run. ComfyUI 0.44 skips a node when any input is an `ExecutionBlocker`, including optional sockets; this pack drops Collect's optional blockers before that short-circuit so `merge` can run. Zero usable inputs raises `SchemaError`. Order is the first copy of each `theme_id`: every decision from `a`, then decisions from `b` whose id is not already kept. An identical later decision is dropped, so a shared ancestor is stored once and its tags are not doubled. Identical means status, enabled, selected ids, tags, select mode, option tag contributions, error, reason, and `raw` all match. A difference raises `SchemaError`.
 
 Collect has no `on_error`. It does not have 32 option slots.
 
@@ -209,7 +209,7 @@ The modal edits `library_json` or `theme_json`. Valid edits are written after ab
 - The first option-slot sync does not retarget a legacy `theme_result` link. Output 0 of a 51f1904 theme was the whole result, not option 0.
 - `on_error=passthrough` emits on every option slot.
 - A multi theme that selects nothing does not emit upstream tags. A theme with no options does not either.
-- Theme Collect ignores a blocked or missing optional input and keeps the other decision. Two real payloads still merge. Zero usable inputs raises `SchemaError`.
+- Theme Collect ignores a blocked or missing optional input and keeps the other decision. Two real payloads still merge. Zero usable inputs raises `SchemaError`. That behavior also requires the load-time wrapper around ComfyUI 0.44 `_async_map_node_over_list`; without it, an optional blocked sibling skips Collect and every required consumer downstream.
 - The modal polls while it is visible. It does not subscribe to widget changes.
 - Restored duplicate theme ids are reported and left unchanged.
 - Tag match is exact any-overlap.

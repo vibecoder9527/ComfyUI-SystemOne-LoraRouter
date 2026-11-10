@@ -12,6 +12,8 @@ class S1ThemeCollect:
 
     CATEGORY = CATEGORY
     FUNCTION = "merge"
+    # ComfyUI 0.44 short-circuits on any ExecutionBlocker input. See execution_compat.
+    IGNORE_OPTIONAL_EXECUTION_BLOCKERS = True
     RETURN_TYPES = ("S1_DECISION",)
     RETURN_NAMES = ("decision",)
     OUTPUT_TOOLTIPS = (
@@ -23,6 +25,8 @@ class S1ThemeCollect:
         "should apply together. a and b are both optional. One wired branch is "
         "returned unchanged. An ExecutionBlocker or missing optional input is "
         "ignored so a selected sibling can stay linked and this node can run. "
+        "ComfyUI 0.44 skips a node when any input is an ExecutionBlocker, including "
+        "optional sockets; this pack drops those optional blockers before that check. "
         "Zero usable inputs raises SchemaError. "
         "Order is the first copy of each theme_id: all of a, then new ids from b. "
         "The same decision for a theme_id already kept is dropped, so a shared "

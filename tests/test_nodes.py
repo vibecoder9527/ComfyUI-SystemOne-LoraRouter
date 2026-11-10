@@ -702,6 +702,7 @@ class NodeTests(unittest.TestCase):
         self.assertIn("ExecutionBlocker", collect.DESCRIPTION)
         self.assertIn("optional", collect.DESCRIPTION.lower())
         self.assertIn("SchemaError", collect.DESCRIPTION)
+        self.assertTrue(collect.IGNORE_OPTIONAL_EXECUTION_BLOCKERS)
 
         aggregate = mappings["S1LoraAggregate"]
         self.assertEqual(aggregate.FUNCTION, "apply")
