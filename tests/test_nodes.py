@@ -1206,6 +1206,7 @@ class NodeTests(unittest.TestCase):
                 "S1Theme",
                 "S1ThemeCollect",
                 "S1LoraAggregate",
+                "S1SaveImageScrubbed",
             },
         )
         self.assertEqual(
@@ -1217,6 +1218,7 @@ class NodeTests(unittest.TestCase):
                 "S1Theme": "Theme",
                 "S1ThemeCollect": "Theme Collect",
                 "S1LoraAggregate": "LoRA Aggregate",
+                "S1SaveImageScrubbed": "S1 Save Image (Scrubbed)",
             },
         )
         self.assertEqual(PKG.WEB_DIRECTORY, "./js")
@@ -1976,7 +1978,7 @@ class NodeTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertEqual(
             completed.stdout.strip(),
-            "S1LoraAggregate,S1LoraLibrary,S1Settings,S1Theme,S1ThemeCollect,S1ThemeRoot",
+            "S1LoraAggregate,S1LoraLibrary,S1SaveImageScrubbed,S1Settings,S1Theme,S1ThemeCollect,S1ThemeRoot",
         )
 
     def test_top_level_nodes_package_imports(self):

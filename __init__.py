@@ -23,6 +23,7 @@ theme nodes before queue. A unique saved id is left as stored.
 
 from .nodes.lora_aggregate import S1LoraAggregate
 from .nodes.lora_library import S1LoraLibrary
+from .nodes.save_image import S1SaveImageScrubbed
 from .nodes.settings import S1Settings
 from .nodes.theme import S1Theme, S1ThemeRoot
 from .nodes.theme_collect import S1ThemeCollect
@@ -35,6 +36,7 @@ NODE_CLASS_MAPPINGS = {
     "S1Theme": S1Theme,
     "S1ThemeCollect": S1ThemeCollect,
     "S1LoraAggregate": S1LoraAggregate,
+    "S1SaveImageScrubbed": S1SaveImageScrubbed,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -44,6 +46,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "S1Theme": "Theme",
     "S1ThemeCollect": "Theme Collect",
     "S1LoraAggregate": "LoRA Aggregate",
+    "S1SaveImageScrubbed": "S1 Save Image (Scrubbed)",
 }
 
 # ComfyUI serves every .js file in this directory as a frontend extension.

@@ -33,8 +33,11 @@ The nodes show up under **SystemOne → LoraRouter**:
 | Theme | `S1Theme` | 32 `S1_DECISION` option slots, then `report_json` |
 | Theme Collect | `S1ThemeCollect` | `S1_DECISION` |
 | LoRA Aggregate | `S1LoraAggregate` | `MODEL`, `CLIP`, `report_json` |
+| S1 Save Image (Scrubbed) | `S1SaveImageScrubbed` | `IMAGE` (output node, saves PNGs) |
 
 `theme_result` and `S1_THEME_RESULT` are gone. `run` and `enable_json` are gone. API widgets live only on SystemOne Settings.
+
+**S1 Save Image (Scrubbed)** works like core Save Image (`filename_prefix`, output folder, `_00001_` counter, preview, `--disable-metadata`), and the PNG still embeds `prompt` and `workflow` so it can be dragged back in. Before writing it clears SystemOne Settings `api_key` and `endpoint` to `""` in copies of the prompt and the workflow (positional `widgets_values`, subgraph definitions too), and removes those values everywhere else they appear, including through a linked Primitive or String node. Values shorter than 6 characters are only cleared in those fields. After writing it re-reads the PNG text chunks; if a value is still there it deletes the file(s) and fails. A reloaded workflow has a blank key (falls back to `SYSTEM_ONE_API_KEY`) and a blank endpoint (the SystemOne default).
 
 ## Wire a decision tree
 

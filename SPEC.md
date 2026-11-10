@@ -10,6 +10,7 @@ This file is the contract for the custom node. Positive is the input above negat
 | `S1Theme` | Theme | 32 × `S1_DECISION`, then `STRING` (`report_json` at index 32) |
 | `S1ThemeCollect` | Theme Collect | `S1_DECISION` |
 | `S1LoraAggregate` | LoRA Aggregate | `MODEL`, `CLIP`, `STRING` (`report_json`) |
+| `S1SaveImageScrubbed` | S1 Save Image (Scrubbed) | `IMAGE` (output node) |
 
 `S1ThemeLibrary`, `S1ThemeSequence`, `S1_THEME_LIB`, and `S1_THEME_SEQ` are not registered. `theme_result` and `S1_THEME_RESULT` are not socket types. `run` and `enable_json` are not widgets.
 
@@ -217,3 +218,13 @@ Option ids follow table order. Every theme write from the on-node editor, the mo
 - Tag match is exact any-overlap.
 - `apply_loras` does not patch weights outside ComfyUI.
 - Invalid theme JSON fails the theme node even when `on_error` is `passthrough`.
+
+## S1 Save Image (Scrubbed)
+
+Mirrors core `SaveImage` (ComfyUI v0.44.0): inputs `images`, `filename_prefix` (default `ComfyUI`); hidden `prompt`, `extra_pnginfo`; `folder_paths.get_save_image_path`; files `{prefix}_{counter:05}_.png`; `compress_level` 4; returns `{"ui": {"images": [...]}, "result": (images,)}`; writes no text chunks when `args.disable_metadata` is set. Otherwise metadata comes from deep copies scrubbed by `schema/scrub.py`; the live objects are not changed.
+
+- Only `S1Settings.api_key` and `S1Settings.endpoint` are scrubbed, to `""` (blank key falls back to `SYSTEM_ONE_API_KEY`, blank endpoint is the default; `"[redacted]"` would fail the endpoint check). Link inputs `[node_id, slot]` are left as links.
+- Workflow `widgets_values` is positional in `INPUT_TYPES` widget order (`api_key` index 0, `endpoint` index 2; a `control_after_generate` widget adds one slot), or by name when it is a dict. Root nodes and `definitions.subgraphs`, nested, are covered.
+- Safety net: the literal values (prompt inputs, linked Primitive/String sources up to 8 hops, workflow widgets, linked frontend `PrimitiveNode`) are removed from every string leaf and key of the prompt and every `extra_pnginfo` value. Values shorter than 6 characters are only cleared by field. Empty strings never match.
+- After each write the PNG `tEXt`/`zTXt`/`iTXt` chunks are read back. A remaining value (raw or JSON-escaped) or a non-blank scrubbed field deletes every file written by that call and raises `ScrubVerificationError`. The message never contains the value.
+
