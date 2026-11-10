@@ -50,6 +50,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
 WEB_DIRECTORY = "./js"
 
 # Optional ExecutionBlocker inputs would otherwise skip Theme Collect on 0.44.
+# Failure emits ThemeCollectHookWarning and stays fail-closed.
 patch_comfy_execution()
 
 __all__ = [

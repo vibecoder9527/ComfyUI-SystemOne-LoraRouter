@@ -186,6 +186,41 @@ class CollectExecutionMixin:
         self.assertEqual(list(filtered.keys()), ["a"])
         self.assertIs(filtered["a"][0], self.payload_a)
 
+    def test_mixed_optional_batch_keeps_live_slices_and_skips_blocked(self):
+        """A blocked batch item must not drop or fail neighbouring live items."""
+
+        blocked = self.blocker_cls(None)
+        seen = []
+        original = self.collect.merge
+
+        def wrapped(*args, **kwargs):
+            seen.append((args, kwargs))
+            return original(*args, **kwargs)
+
+        self.collect.merge = wrapped
+        packed = {
+            "a": [self.payload_a, blocked, self.payload_a],
+            "b": [blocked, blocked, blocked],
+        }
+        out = self.execute_map(self.collect, packed)
+        self.assertEqual(len(out), 3)
+        self.assertIs(out[0][0], self.payload_a)
+        self.assertTrue(BLOCKER.is_execution_blocker(out[1][0]))
+        self.assertIs(out[2][0], self.payload_a)
+        # merge runs only for the two live slices; the blocked slice is not activated.
+        self.assertEqual(len(seen), 2)
+        called_a = []
+        for args, kwargs in seen:
+            if "a" in kwargs:
+                called_a.append(kwargs["a"])
+            elif args:
+                called_a.append(args[0])
+            else:
+                called_a.append(None)
+        self.assertIs(called_a[0], self.payload_a)
+        self.assertIs(called_a[1], self.payload_a)
+
+
 
 class TestCollectExecutionFixture(CollectExecutionMixin, unittest.TestCase):
     """Isolated 0.44 short-circuit with the optional-blocker filter applied."""
