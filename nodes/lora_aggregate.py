@@ -24,8 +24,10 @@ class S1LoraAggregate:
     DESCRIPTION = (
         "Match S1_LORA_LIB tags to the tags on an S1_DECISION. "
         "Wire decision from a selected option slot or from Theme Collect. "
-        "enabled_default true always applies; false applies only when a tag overlaps. "
-        "Each lora_id is applied once, in lora_id order, with its library strengths. "
+        "enabled_default true always applies; false applies only when a tag name overlaps "
+        "(case-insensitive, ignoring an optional :weight on the option tag). "
+        "A weighted option tag overrides both strengths; weight 0 skips that LoRA. "
+        "Each lora_id is applied once, in lora_id order. "
         "on_error here is weight loading, not the theme's SystemOne on_error. "
         "passthrough returns the input MODEL and CLIP when the inputs are unusable "
         "or a weight file fails. Theme errors already stored on the decision "

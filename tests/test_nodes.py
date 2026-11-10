@@ -78,6 +78,11 @@ import {
   addTagToken,
   removeTagToken,
   tagsToCommaString,
+  parseTagToken,
+  formatTagToken,
+  formatTagChipLabel,
+  normalizeLibraryTags,
+  clampLoraStrength,
   buildLoraMenuTree,
   loraChooserMenuItems,
   applyLoraChooserAction,
@@ -968,6 +973,37 @@ assert(JSON.stringify(addTagToken(["bikini"], "style")) === JSON.stringify(["bik
 assert(JSON.stringify(removeTagToken(["bikini", "style"], 1)) === JSON.stringify(["bikini"]), "removeTagToken drops by index");
 assert(tagsToCommaString(["bikini", "style"]) === "bikini, style", "tags serialize to a comma string");
 assert(JSON.stringify(tokenizeTags(tagsToCommaString(["a", "b"]))) === JSON.stringify(["a", "b"]), "comma string roundtrips");
+assert(parseTagToken("age:-2").name === "age" && parseTagToken("age:-2").weight === -2, "parse age:-2");
+assert(parseTagToken("age:+1.5").weight === 1.5 && parseTagToken("age:+1.5").canonical === "age:1.5", "plus is optional and dropped in canonical form");
+assert(parseTagToken("age:0").weight === 0, "parse age:0");
+assert(parseTagToken("foo:bar").name === "foo:bar" && parseTagToken("foo:bar").weight == null, "non-numeric suffix stays in the name");
+assert(parseTagToken("age:±2").weight == null, "plus-minus is not a weight");
+assert(formatTagToken("age", -2) === "age:-2", "format negative weight");
+assert(formatTagChipLabel("age:-2") === "age \u22122", "weighted chip uses a proper minus");
+assert(formatTagChipLabel("age:1.5") === "age 1.5", "positive chip has no plus");
+assert(JSON.stringify(tokenizeTags("age, age:-2")) === JSON.stringify(["age:-2"]), "later weight updates the same name");
+assert(JSON.stringify(tokenizeTags("age:-2, age")) === JSON.stringify(["age"]), "later bare name drops the weight");
+assert(JSON.stringify(tokenizeTags("Age:-2, age:+1.5")) === JSON.stringify(["Age:1.5"]), "first spelling, last weight");
+assert(JSON.stringify(normalizeLibraryTags("age:-2, Style")) === JSON.stringify(["age", "Style"]), "library tags stay plain names");
+assert(clampLoraStrength(6, true) === 5 && clampLoraStrength(-6, true) === -5, "slider strength clamps to -5..5");
+assert(clampLoraStrength(6, false) === 6, "non-slider strength keeps the existing unbounded range");
+const sliderLib = commitModel("lora", { loras: [{ name: "age.safetensors", strength: -2, tags: ["age:-2"], slider: true, enabled_default: true }] });
+assert(sliderLib.ok, "slider library commits");
+assert(sliderLib.model.loras[0].slider === true, "slider flag is stored");
+assert(sliderLib.model.loras[0].strength_model === -2 && sliderLib.model.loras[0].strength_clip === -2, "slider can store a negative strength");
+assert(JSON.stringify(sliderLib.model.loras[0].tags) === JSON.stringify(["age"]), "committed library tags drop weights");
+const parsedLib = parseEditorDocument("lora", sliderLib.json);
+assert(parsedLib.ok && parsedLib.model.loras[0].slider === true, "slider flag round-trips through JSON");
+const legacyLib = parseEditorDocument("lora", '{ "loras": [{ "lora_id": "lora_1", "name": "x.safetensors", "strength_model": 0.8, "strength_clip": 0.8, "tags": ["age"] }] }');
+assert(legacyLib.ok && legacyLib.model.loras[0].slider === false, "legacy library JSON defaults slider to off");
+const themeTags = commitModel("theme", { theme_id: "t", title: "T", instructions: "I", select_mode: "single", options: [{ option_id: "o", label: "O", description: "D", tags: ["age:-2", "plain"] }] });
+assert(themeTags.ok && JSON.stringify(themeTags.model.options[0].tags) === JSON.stringify(["age:-2", "plain"]), "option tags store age:-2 strings");
+const graphTags = collectGraphTags({
+  _nodes: [
+    { comfyClass: "S1Theme", widgets: [{ name: "theme_json", value: themeTags.json }] },
+  ],
+}, null);
+assert(JSON.stringify(graphTags) === JSON.stringify(["age", "plain"]), "autocomplete suggestions use the name part");
 
 const tree = buildLoraMenuTree([
   "root.safetensors",

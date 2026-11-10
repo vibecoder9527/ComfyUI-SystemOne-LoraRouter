@@ -12,6 +12,8 @@ import math
 from dataclasses import dataclass, field
 from typing import Any
 
+from .tags import normalize_library_tags
+
 # Widget defaults. Dynamic prompts must stay off so the braces stay literal JSON.
 EMPTY_LORA_LIBRARY_JSON = '{ "loras": [] }'
 EMPTY_THEME_JSON = (
@@ -45,6 +47,7 @@ _LORA_ENTRY_KEYS = {
     "strength_clip",
     "tags",
     "enabled_default",
+    "slider",
     "meta",
 }
 _THEME_KEYS = {
@@ -90,6 +93,9 @@ class LoraEntry:
     tags: list[str] = field(default_factory=list)
     # False: aggregate skips this entry even when a selected tag matches.
     enabled_default: bool = True
+    # True: this entry is a slider. Library strength may be negative
+    # (UI range -5..5). Library tags stay plain names.
+    slider: bool = False
     meta: dict[str, Any] = field(default_factory=dict)
 
 
@@ -420,8 +426,9 @@ def _parse_lora_entry(data: Any, path: str) -> LoraEntry:
         name=_require_name(data, path),
         strength_model=_require_float_field(data, "strength_model", path),
         strength_clip=_require_float_field(data, "strength_clip", path),
-        tags=_optional_string_list(data, "tags", path),
+        tags=normalize_library_tags(_optional_string_list(data, "tags", path)),
         enabled_default=_optional_bool(data, "enabled_default", path, default=True),
+        slider=_optional_bool(data, "slider", path, default=False),
         meta=_optional_object(data, "meta", path),
     )
 

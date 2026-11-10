@@ -131,16 +131,21 @@ function rejectRemoved(data, path) {
 
 function checkLoraEntry(data, path) {
   if (!isObject(data)) fail(`${path} must be an object`);
-  rejectUnknown(data, ["lora_id", "name", "strength_model", "strength_clip", "tags", "enabled_default", "meta"], path);
+  rejectUnknown(data, ["lora_id", "name", "strength_model", "strength_clip", "tags", "enabled_default", "slider", "meta"], path);
   let meta = null;
   if (Object.prototype.hasOwnProperty.call(data, "meta")) {
     if (!isObject(data.meta)) fail(`${path}.meta must be an object`);
     meta = data.meta;
   }
-  const tags = Object.prototype.hasOwnProperty.call(data, "tags") ? stringList(data.tags, `${path}.tags`) : [];
+  const tags = normalizeLibraryTags(
+    Object.prototype.hasOwnProperty.call(data, "tags") ? stringList(data.tags, `${path}.tags`) : [],
+  );
   const enabled = Object.prototype.hasOwnProperty.call(data, "enabled_default")
     ? requireBool(data.enabled_default, `${path}.enabled_default`)
     : true;
+  const slider = Object.prototype.hasOwnProperty.call(data, "slider")
+    ? requireBool(data.slider, `${path}.slider`)
+    : false;
   return {
     lora_id: requireId(data.lora_id, `${path}.lora_id`),
     name: requireName(data.name, `${path}.name`),
@@ -148,6 +153,7 @@ function checkLoraEntry(data, path) {
     strength_clip: requireFloatField(data, "strength_clip", path),
     tags,
     enabled_default: enabled,
+    slider,
     meta: meta && Object.keys(meta).length ? structuredClone(meta) : null,
   };
 }
@@ -1142,9 +1148,10 @@ function documentFromLora(model) {
       strength_model: strength,
       strength_clip: strength,
     };
-    const tags = tagsFromEditor(entry.tags);
+    const tags = normalizeLibraryTags(tagsFromEditor(entry.tags));
     if (tags.length) out.tags = tags;
     if (entry.enabled_default === false) out.enabled_default = false;
+    if (entry.slider === true) out.slider = true;
     if (entry.meta && isObject(entry.meta) && Object.keys(entry.meta).length) out.meta = entry.meta;
     return out;
   });
@@ -1202,6 +1209,7 @@ function emitLora(checked) {
       };
       if (entry.tags.length) out.tags = entry.tags.slice();
       if (!entry.enabled_default) out.enabled_default = false;
+      if (entry.slider) out.slider = true;
       if (entry.meta) out.meta = entry.meta;
       return out;
     }),
@@ -1309,7 +1317,7 @@ export function commitModel(kind, model) {
 }
 
 export function blankLora() {
-  return { lora_id: "", name: "", strength_model: 0.8, strength_clip: 0.8, tags: [], enabled_default: true, meta: null };
+  return { lora_id: "", name: "", strength_model: 0.8, strength_clip: 0.8, tags: [], enabled_default: true, slider: false, meta: null };
 }
 
 export function blankOption() {
@@ -1414,36 +1422,114 @@ export function splitList(text) {
     .filter((item) => item !== "");
 }
 
-/** Trim, drop empties, and dedupe tags (first spelling wins, case-insensitive). */
-export function tokenizeTags(value) {
+export const SLIDER_STRENGTH_MIN = -5;
+export const SLIDER_STRENGTH_MAX = 5;
+
+const WEIGHT_SUFFIX = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/;
+
+/** Split ``name`` or ``name:weight``. Non-numeric suffixes stay in the name. */
+export function parseTagToken(value) {
+  const raw = String(value ?? "").trim();
+  let name = raw;
+  let weight = null;
+  if (raw.includes(":")) {
+    const cut = raw.lastIndexOf(":");
+    const head = raw.slice(0, cut).trim();
+    const suffix = raw.slice(cut + 1).trim();
+    if (head && WEIGHT_SUFFIX.test(suffix)) {
+      const number = Number(suffix);
+      if (Number.isFinite(number)) {
+        name = head;
+        weight = number;
+      }
+    }
+  }
+  return { name, weight, raw, canonical: formatTagToken(name, weight) };
+}
+
+export function formatTagWeight(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "0";
+  if (Math.abs(number - Math.round(number)) < 1e-10 && Math.abs(number) < 1e15) {
+    return String(Math.round(number));
+  }
+  return String(Number(number.toFixed(6)));
+}
+
+export function formatTagToken(name, weight = null) {
+  const text = String(name ?? "").trim();
+  if (weight == null || !Number.isFinite(Number(weight))) return text;
+  return `${text}:${formatTagWeight(weight)}`;
+}
+
+/** Chip text: ``age`` or ``age −2`` (Unicode minus U+2212). */
+export function formatTagChipLabel(tag) {
+  const parsed = typeof tag === "string" || tag == null ? parseTagToken(tag) : tag;
+  if (parsed.weight == null) return parsed.name;
+  const shown = formatTagWeight(parsed.weight);
+  const signed = shown.startsWith("-") ? `−${shown.slice(1)}` : shown;
+  return `${parsed.name} ${signed}`;
+}
+
+export function tagNameOf(value) {
+  return parseTagToken(value).name;
+}
+
+export function clampLoraStrength(value, slider = false) {
+  let number = Math.round(Number(value) * 100) / 100;
+  if (!Number.isFinite(number)) return 1;
+  if (slider) {
+    if (number < SLIDER_STRENGTH_MIN) number = SLIDER_STRENGTH_MIN;
+    if (number > SLIDER_STRENGTH_MAX) number = SLIDER_STRENGTH_MAX;
+  }
+  return number;
+}
+
+/**
+ * Trim, drop empties, and dedupe tags by name (first spelling wins,
+ * case-insensitive). A later token with the same name updates the weight
+ * (including dropping it when the later token is unweighted). ``plainNames``
+ * strips any ``:weight`` so library tags stay identifiers.
+ */
+export function tokenizeTags(value, options = {}) {
+  const plainNames = Boolean(options?.plainNames);
   const parts = Array.isArray(value)
     ? value.flatMap((item) => String(item ?? "").split(/[,\n]/))
     : String(value ?? "").split(/[,\n]/);
-  const tags = [];
-  const seen = new Set();
+  const order = [];
+  const byKey = new Map();
   for (const part of parts) {
-    const tag = String(part).trim();
-    if (!tag) continue;
-    const key = tag.toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
-    tags.push(tag);
+    const parsed = parseTagToken(part);
+    if (!parsed.name) continue;
+    const weight = plainNames ? null : parsed.weight;
+    const key = parsed.name.toLowerCase();
+    if (byKey.has(key)) {
+      byKey.get(key).weight = weight;
+      continue;
+    }
+    const rec = { name: parsed.name, weight };
+    byKey.set(key, rec);
+    order.push(rec);
   }
-  return tags;
+  return order.map((rec) => formatTagToken(rec.name, rec.weight));
 }
 
-export function addTagToken(tags, text) {
-  return tokenizeTags([...(Array.isArray(tags) ? tags : tokenizeTags(tags)), text]);
+export function normalizeLibraryTags(value) {
+  return tokenizeTags(value, { plainNames: true });
 }
 
-export function removeTagToken(tags, index) {
-  const current = tokenizeTags(tags);
+export function addTagToken(tags, text, options = {}) {
+  return tokenizeTags([...(Array.isArray(tags) ? tags : tokenizeTags(tags, options)), text], options);
+}
+
+export function removeTagToken(tags, index, options = {}) {
+  const current = tokenizeTags(tags, options);
   if (!Number.isInteger(index) || index < 0 || index >= current.length) return current;
   return current.filter((_, itemIndex) => itemIndex !== index);
 }
 
-export function tagsToCommaString(tags) {
-  return tokenizeTags(tags).join(", ");
+export function tagsToCommaString(tags, options = {}) {
+  return tokenizeTags(tags, options).join(", ");
 }
 
 export function normalizeLoraPath(name) {
@@ -1826,9 +1912,11 @@ export function collectGraphTags(graph, currentNode) {
   const tags = [];
   const seen = new Set();
   const add = (item) => {
-    const tag = String(item || "").trim();
-    if (!tag || seen.has(tag)) return;
-    seen.add(tag);
+    const tag = tagNameOf(item);
+    if (!tag) return;
+    const key = tag.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
     tags.push(tag);
   };
   const visit = (owner) => {

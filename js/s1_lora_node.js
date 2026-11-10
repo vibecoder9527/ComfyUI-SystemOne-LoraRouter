@@ -13,6 +13,7 @@ import {
   applyLoraChooserAction,
   assignLoraIds,
   blankLora,
+  clampLoraStrength,
   collectGraphTags,
   commitModel,
   isUsableLoraName,
@@ -56,6 +57,8 @@ const CSS = `
 .s1-lora-row { margin: 3px 8px; padding: 4px 8px; border-radius: 10px; background: rgba(0,0,0,0.28); border: 1px solid rgba(255,255,255,0.08); }
 .s1-lora-toggle { width: 18px; height: 18px; border-radius: 50%; border: 2px solid rgba(255,255,255,0.55); background: transparent; padding: 0; cursor: pointer; flex: 0 0 18px; }
 .s1-lora-toggle.is-on { background: #3d9c66; border-color: #3d9c66; }
+.s1-lora-slider { width: 18px; height: 18px; flex: 0 0 18px; margin-top: 1px; border: 1px solid rgba(255,255,255,0.45); background: transparent; color: inherit; font: 10px/16px system-ui, sans-serif; cursor: pointer; padding: 0; border-radius: 3px; }
+.s1-lora-slider.is-on { background: #3d6d9c; border-color: #3d6d9c; color: #fff; }
 .s1-lora-name { flex: 1; min-width: 4em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; text-align: left; background: none; border: 0; color: inherit; font: inherit; padding: 2px 0; }
 .s1-lora-name:hover { text-decoration: underline; }
 .s1-lora-str { display: flex; align-items: center; gap: 2px; width: 7.2em; justify-content: center; flex: 0 0 7.2em; }
@@ -265,6 +268,7 @@ function showRowMenu(event, node, index) {
   const model = readLibrary(node);
   const box = document.createElement("div");
   box.className = "s1-lora-menu";
+  const entry = model.loras[index];
   const items = [
     ["Move up", index > 0, () => {
       const [row] = model.loras.splice(index, 1);
@@ -273,6 +277,16 @@ function showRowMenu(event, node, index) {
     ["Move down", index < model.loras.length - 1, () => {
       const [row] = model.loras.splice(index, 1);
       model.loras.splice(index + 1, 0, row);
+    }],
+    [entry?.slider ? "Unmark Slider" : "Mark as Slider", true, () => {
+      entry.slider = !entry.slider;
+      if (!entry.slider) {
+        const number = Number(entry.strength_model) || 0;
+        if (number < 0) {
+          entry.strength_model = 0;
+          entry.strength_clip = 0;
+        }
+      }
     }],
     ["Delete", true, () => {
       model.loras.splice(index, 1);
@@ -370,8 +384,8 @@ function renderLibrary(node) {
     inc.type = "button";
     inc.textContent = "▶";
     const applyStrength = (next) => {
-      const number = Math.round(Number(next) * 100) / 100;
-      if (!Number.isFinite(number)) {
+      const number = clampLoraStrength(next, entry.slider);
+      if (!Number.isFinite(Number(next))) {
         val.value = fmtStrength(entry.strength_model ?? 1);
         return;
       }
@@ -408,13 +422,37 @@ function renderLibrary(node) {
       tags: entry.tags || [],
       suggestions: tags,
       listId,
+      plainNames: true,
       onChange: (next) => {
         entry.tags = next;
         writeLibrary(node, model);
       },
     }));
 
-    row.append(enableCol, name, strengthBox, tagsWrap);
+    const slider = document.createElement("button");
+    slider.type = "button";
+    slider.className = "s1-lora-slider" + (entry.slider ? " is-on" : "");
+    slider.textContent = "S";
+    slider.title = entry.slider
+      ? "Slider (strength −5 to 5). Click to unmark."
+      : "Mark as Slider (allows strength −5 to 5)";
+    slider.addEventListener("click", () => {
+      entry.slider = !entry.slider;
+      if (!entry.slider) {
+        const number = Number(entry.strength_model) || 0;
+        if (number < 0) {
+          entry.strength_model = 0;
+          entry.strength_clip = 0;
+        }
+      } else {
+        entry.strength_model = clampLoraStrength(entry.strength_model, true);
+        entry.strength_clip = entry.strength_model;
+      }
+      writeLibrary(node, model);
+      renderLibrary(node);
+    });
+
+    row.append(enableCol, name, slider, strengthBox, tagsWrap);
     host.append(row);
   });
 

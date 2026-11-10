@@ -2,9 +2,20 @@
 
 ``enabled_default`` true (always-on): the entry is applied regardless of tags.
 ``enabled_default`` false (tag-gated): the entry is applied only when any of
-its tags is in the result's tag list. Comparison is exact. The library
-``strength_model`` and ``strength_clip`` are the only strengths. Entries are
-applied in ``lora_id`` order through ``apply_loras``.
+its library tags shares a name with a selected option tag. Comparison is
+case-insensitive and ignores an optional ``:weight`` suffix on option tags
+(``age:-2`` matches library tag ``age``).
+
+When a matching option tag carries a weight, that weight overrides both
+``strength_model`` and ``strength_clip``. Unweighted hits keep the library
+strengths. Weight ``0`` skips loading (listed under ``skipped`` with reason
+``weight_0``), including Default On entries. Several weighted hits on the
+same LoRA (including across themes) use the weight with the greatest
+absolute value; a tie keeps the first hit in Theme Result decision order,
+then option_tags order, then tag order. Weights outside -5..5 are clamped
+with a warning. A negative weight on a non-slider entry is still applied
+and records a warning. Entries are applied in ``lora_id`` order through
+``apply_loras``.
 """
 
 from __future__ import annotations
@@ -14,6 +25,7 @@ from typing import Any
 
 from .apply_loras import apply_loras
 from .schema.blocker import is_execution_blocker
+from .schema.tags import clamp_strength, parse_tag
 from .schema.types import (
     DecisionPayload,
     LoraLibrary,
@@ -49,52 +61,128 @@ def _result_of(decision: DecisionPayload) -> ThemeResult:
 def match_loras(lora_lib: LoraLibrary, decision: DecisionPayload) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Return ``(matched, skipped)`` without loading weight files.
 
-    ``matched`` items use the ``apply_loras`` shape plus ``matched_tags``.
-    Always-on entries (``enabled_default`` true) are matched even with no tag
-    overlap; ``matched_tags`` / ``sources`` are then empty. Tag-gated entries
-    (``enabled_default`` false) match only on tag overlap. ``skipped`` is kept
-    for forward compatibility and is empty under this rule. Entries that are
-    tag-gated with no overlap are omitted.
+    ``matched`` items use the ``apply_loras`` shape plus ``matched_tags``,
+    ``weight_source``, ``slider``, and ``warnings``. Always-on entries
+    (``enabled_default`` true) are matched even with no tag overlap;
+    ``matched_tags`` / ``sources`` are then empty and strengths come from
+    the library, unless a weighted tag also hits. Tag-gated entries match
+    only on a name overlap. ``skipped`` lists entries whose resolved
+    weight is 0. Tag-gated entries with no overlap are omitted.
     """
 
     if not isinstance(lora_lib, LoraLibrary):
         raise SchemaError("lora_lib must be an S1_LORA_LIB from S1LoraLibrary")
     result = _result_of(decision)
-    tag_sources: dict[str, list[list[str]]] = {}
-    for decision in result.decisions:
-        if decision.status != "ok":
-            continue
-        for option_id, option_tags in decision.option_tags:
-            for tag in option_tags:
-                tag_sources.setdefault(tag, []).append([decision.theme_id, option_id, tag])
-    selected = set(result.tags)
     matched: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
     for lora_id in sorted(lora_lib.loras):
         entry = lora_lib.loras[lora_id]
-        overlap: list[str] = []
-        seen_tags: set[str] = set()
-        for tag in entry.tags:
-            if tag in selected and tag not in seen_tags:
-                seen_tags.add(tag)
-                overlap.append(tag)
+        library_keys = {parse_tag(tag).name_key: tag for tag in entry.tags if parse_tag(tag).name}
+        hits = _option_hits(result, library_keys)
+        overlap = _matched_library_tags(entry.tags, hits)
+        sources = [[hit["theme_id"], hit["option_id"], hit["tag"]] for hit in hits]
         always_on = entry.enabled_default
-        if not always_on and not overlap:
+        if not always_on and not hits:
             continue
-        sources: list[list[str]] = []
-        for tag in overlap:
-            sources.extend(tag_sources.get(tag, []))
-        matched.append(
-            {
-                "lora_id": lora_id,
-                "name": entry.name,
-                "strength_model": entry.strength_model,
-                "strength_clip": entry.strength_clip,
-                "matched_tags": overlap,
-                "sources": sources,
-            }
-        )
+        item, skip = _resolve_strength(entry, lora_id, hits, overlap, sources)
+        if skip:
+            skipped.append(item)
+        else:
+            matched.append(item)
     return matched, skipped
+
+
+def _option_hits(result: ThemeResult, library_keys: dict[str, str]) -> list[dict[str, Any]]:
+    """Option-tag hits in theme / option / tag order."""
+
+    hits: list[dict[str, Any]] = []
+    for decision in result.decisions:
+        if decision.status != "ok":
+            continue
+        for option_id, option_tags in decision.option_tags:
+            for raw in option_tags:
+                parsed = parse_tag(raw)
+                if not parsed.name or parsed.name_key not in library_keys:
+                    continue
+                hits.append(
+                    {
+                        "theme_id": decision.theme_id,
+                        "option_id": option_id,
+                        "tag": raw,
+                        "parsed": parsed,
+                    }
+                )
+    return hits
+
+
+def _matched_library_tags(library_tags: list[str], hits: list[dict[str, Any]]) -> list[str]:
+    """Library tag spellings that a hit reached, in library order."""
+
+    hit_keys = {hit["parsed"].name_key for hit in hits}
+    overlap: list[str] = []
+    seen: set[str] = set()
+    for tag in library_tags:
+        parsed = parse_tag(tag)
+        if parsed.name_key not in hit_keys or tag in seen:
+            continue
+        seen.add(tag)
+        overlap.append(tag)
+    return overlap
+
+
+def _resolve_strength(entry, lora_id: str, hits: list[dict[str, Any]], overlap: list[str], sources: list[list[str]]):
+    """Pick library strengths or an overriding option weight."""
+
+    warnings: list[str] = []
+    weighted = [hit for hit in hits if hit["parsed"].has_weight]
+    if weighted:
+        chosen = weighted[0]
+        for hit in weighted[1:]:
+            if abs(hit["parsed"].weight) > abs(chosen["parsed"].weight):
+                chosen = hit
+        raw_weight = float(chosen["parsed"].weight)
+        strength, clamped = clamp_strength(raw_weight)
+        if clamped:
+            warnings.append(
+                f"LoRA {lora_id}: tag weight {raw_weight} was clamped to {strength} (range -5..5)."
+            )
+        if not entry.slider and strength < 0:
+            warnings.append(
+                f"LoRA {lora_id}: weighted tag {chosen['tag']!r} applied a negative "
+                f"strength ({strength}) to a non-slider entry."
+            )
+        weight_source = {
+            "kind": "tag",
+            "theme_id": chosen["theme_id"],
+            "option_id": chosen["option_id"],
+            "tag": chosen["tag"],
+            "tag_name": chosen["parsed"].name,
+            "weight": strength,
+            "requested_weight": raw_weight,
+        }
+        strength_model = strength
+        strength_clip = strength
+    else:
+        strength_model = entry.strength_model
+        strength_clip = entry.strength_clip
+        weight_source = {"kind": "library"}
+
+    item = {
+        "lora_id": lora_id,
+        "name": entry.name,
+        "strength_model": strength_model,
+        "strength_clip": strength_clip,
+        "matched_tags": overlap,
+        "sources": sources,
+        "slider": bool(entry.slider),
+        "weight_source": weight_source,
+        "warnings": warnings,
+    }
+    if weighted and float(item["strength_model"]) == 0.0:
+        item["reason"] = "weight_0"
+        item["skipped"] = True
+        return item, True
+    return item, False
 
 
 
@@ -119,14 +207,26 @@ def aggregate_loras(
             "strength_model": item["strength_model"],
             "strength_clip": item["strength_clip"],
             "sources": item["sources"],
+            "slider": item.get("slider", False),
+            "weight_source": item.get("weight_source", {"kind": "library"}),
+            "warnings": list(item.get("warnings") or []),
         }
         for item in matched
     ]
     outcome = apply_loras(model, clip, apply_items, on_error=on_error)
     notes = list(outcome.notes)
+    warnings: list[str] = []
+    for item in matched:
+        warnings.extend(item.get("warnings") or [])
+    for item in skipped:
+        warnings.extend(item.get("warnings") or [])
     if skipped:
         names = ", ".join(item["lora_id"] for item in skipped)
-        notes.append(f"Skipped LoRA(s): {names}.")
+        reasons = {item.get("reason") for item in skipped}
+        if reasons <= {"weight_0"}:
+            notes.append(f"Skipped LoRA(s) at weight 0: {names}.")
+        else:
+            notes.append(f"Skipped LoRA(s): {names}.")
     if theme_result.errors:
         notes.append(
             "The decision already recorded theme errors. Matching still used the tags it kept."
@@ -139,6 +239,7 @@ def aggregate_loras(
         "applied": outcome.applied,
         "errors": list(theme_result.errors) + list(outcome.errors),
         "notes": notes,
+        "warnings": warnings,
     }
     return AggregateOutcome(model=outcome.model, clip=outcome.clip, report=report)
 

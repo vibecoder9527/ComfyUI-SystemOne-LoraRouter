@@ -607,6 +607,7 @@ function renderLoras() {
     const row = el("div", "s1-lora-row");
     row.append(
       field("On", `${path}.enabled_default`, entry.enabled_default !== false, { check: true }),
+      field("Slider", `${path}.slider`, entry.slider === true, { check: true }),
       loraNameField(path, entry.name),
       field("strength", `${path}.strength`, showNumber(displayedStrength(entry)), { decimal: true }),
       tagField(`${path}.tags`, (entry.tags || []).join(", ")),
@@ -615,7 +616,7 @@ function renderLoras() {
     const actions = row.querySelector(".s1-card-actions");
     listButtons("loras", index, state.model.loras.length).forEach((btn) => actions.append(btn));
     const box = card(title, [], [row]);
-    box.append(hint("On: always apply. Off: apply only when a selected tag overlaps. Strength writes both strength_model and strength_clip."));
+    box.append(hint("On: always apply. Off: apply only when a selected tag overlaps. Slider allows strength from -5 to 5 (including negative). Strength writes both strength_model and strength_clip. Library tags are plain names."));
     if (strengthsDiffer(entry)) {
       box.append(hint("strength_clip differs. The next valid write copies this strength to both strength_model and strength_clip."));
     }

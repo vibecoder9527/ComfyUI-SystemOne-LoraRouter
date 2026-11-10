@@ -293,6 +293,10 @@ def _run_single(client, state, theme: ThemeDefinition, min_confidence):
         only = theme.options[0].option_id
         return [only], {"skipped_api": True, "reason": "single_option", "choice": only}
 
+    # Decision prompt is theme.instructions plus each option's description
+    # keyed by option_id. Option tags and LoRA library tags are not sent;
+    # they are applied after the answer in _contribute / Aggregate. If a
+    # future prompt includes tags, send names only (strip :weight).
     qid = theme.theme_id
     questions = {
         qid: {
@@ -322,6 +326,8 @@ def _run_single(client, state, theme: ThemeDefinition, min_confidence):
 
 
 def _run_multi(client, state, theme: ThemeDefinition, threshold):
+    # Noul prompt is theme.instructions plus option.label and
+    # option.description. Option tags and library tags are not sent.
     questions = {}
     for option in theme.options:
         qid = f"{theme.theme_id}__{option.option_id}"

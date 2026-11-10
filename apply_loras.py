@@ -118,7 +118,7 @@ def _handle_lora_error(
 
 
 def _record(item: dict[str, Any], *, loaded: bool) -> dict[str, Any]:
-    return {
+    record = {
         "lora_id": item["lora_id"],
         "name": item["name"],
         "strength_model": item["strength_model"],
@@ -126,6 +126,10 @@ def _record(item: dict[str, Any], *, loaded: bool) -> dict[str, Any]:
         "sources": item["sources"],
         "loaded": loaded,
     }
+    for key in ("slider", "weight_source", "warnings"):
+        if key in item:
+            record[key] = item[key]
+    return record
 
 
 def _import_comfy():

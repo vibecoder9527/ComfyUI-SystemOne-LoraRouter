@@ -19,7 +19,8 @@ class S1LoraLibrary:
     RETURN_NAMES = ("lora_lib",)
     DESCRIPTION = (
         "Parse a LoRA library JSON object into S1_LORA_LIB. "
-        "Stores the file name under ComfyUI loras/, tags, and the strengths. "
+        "Stores the file name under ComfyUI loras/, tags, strengths, and an optional Slider flag. "
+        "Slider entries allow negative strength in the -5 to 5 range. Library tags stay plain names. "
         "Does not load the weight file. "
         "Open visual editor opens a modal that edits library_json. "
         "Its name field can pick a file from the ComfyUI loras list; typed names still work."

@@ -96,6 +96,8 @@ def lora_entries(*rows):
         else:
             # Tests that omit the flag want tag-gated matching, not always-on.
             item["enabled_default"] = False
+        if "slider" in row:
+            item["slider"] = row["slider"]
         entries.append(item)
     return TYPES.parse_lora_library({"version": 1, "loras": entries})
 
