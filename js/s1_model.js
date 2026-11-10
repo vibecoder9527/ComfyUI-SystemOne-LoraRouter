@@ -821,7 +821,108 @@ export function relinkOptionSlots(node, slots) {
   if (!report.name) report.name = "report_json";
   if (!report.type || report.type === DECISION_TYPE) report.type = "STRING";
   report.hidden = false;
+  report.s1PromptIndex = REPORT_OUTPUT_INDEX;
   return { ok: true, first, moved, dropped, kept };
+}
+
+export const PROMPT_INDEX_FIELD = "s1PromptIndex";
+
+function remapOriginSlots(node, indexMap) {
+  if (!node?.graph || !indexMap || !indexMap.size) return;
+  eachGraphLink(node.graph, (link) => {
+    const parts = linkParts(link);
+    if (!parts || !sameNodeId(parts.originId, node.id)) return;
+    const from = asSlot(parts.originSlot);
+    if (from == null || !indexMap.has(from)) return;
+    const to = indexMap.get(from);
+    if (to === from) return;
+    writeOriginSlot(link, to);
+  });
+}
+
+/**
+ * Restore the full 32 option pads + report_json at index 32.
+ *
+ * Frontend 1.57.6 Vue Nodes 2.0 (Comfy.VueNodes.Enabled) renders
+ * `nodeData.outputs` with no `slot.hidden` filter, so display uses a
+ * compacted array. Execution and saved workflows still use fixed indexes
+ * (report_json is always 32). Expand before graphToPrompt / serialize.
+ * Never assigns output.links.
+ */
+export function expandOptionOutputs(node) {
+  if (!node) return { ok: false, expanded: false };
+  if (!Array.isArray(node.outputs)) node.outputs = [];
+  const current = node.outputs.filter(Boolean);
+  const fullLen = REPORT_OUTPUT_INDEX + 1;
+  const alreadyFull = node.outputs.length >= fullLen && node.outputs[REPORT_OUTPUT_INDEX];
+  if (alreadyFull) {
+    for (let index = 0; index < fullLen; index += 1) {
+      const output = ensureOutput(node.outputs, index, index === REPORT_OUTPUT_INDEX ? "STRING" : DECISION_TYPE);
+      output.s1PromptIndex = index;
+    }
+    return { ok: true, expanded: false };
+  }
+  const placed = new Array(fullLen).fill(null);
+  const indexMap = new Map();
+  current.forEach((output, visual) => {
+    let prompt = Number.isInteger(output.s1PromptIndex) ? output.s1PromptIndex : -1;
+    if (prompt < 0) {
+      const isReport = output.name === "report_json" || (output.type === "STRING" && output.type !== DECISION_TYPE);
+      prompt = isReport ? REPORT_OUTPUT_INDEX : visual;
+    }
+    if (prompt < 0 || prompt >= fullLen) return;
+    if (!placed[prompt]) placed[prompt] = output;
+    indexMap.set(visual, prompt);
+  });
+  for (let index = 0; index < fullLen; index += 1) {
+    if (placed[index]) {
+      placed[index].s1PromptIndex = index;
+      continue;
+    }
+    if (index === REPORT_OUTPUT_INDEX) {
+      placed[index] = { name: "report_json", type: "STRING", hidden: false, s1PromptIndex: index };
+    } else {
+      placed[index] = { name: UNUSED_OPTION_LABEL, type: DECISION_TYPE, hidden: true, s1OptionId: "", s1PromptIndex: index };
+    }
+  }
+  node.outputs = placed;
+  remapOriginSlots(node, indexMap);
+  return { ok: true, expanded: true };
+}
+
+/**
+ * Drop unused unconnected option pads so Vue Nodes 2.0 does not paint them.
+ * Connected / live sockets are never removed. report_json stays in the
+ * visible list but keeps s1PromptIndex 32 for prompt expansion.
+ * Only trailing (and interstitial unused) unconnected pads go away; option
+ * backend indexes of kept slots do not change.
+ */
+export function compactOptionOutputs(node) {
+  if (!node) return { ok: false };
+  expandOptionOutputs(node);
+  const liveSlots = liveOriginSlots(node);
+  const kept = [];
+  const indexMap = new Map();
+  for (let index = 0; index < MAX_OPTION_OUTPUTS; index += 1) {
+    const output = node.outputs[index];
+    const live = outputHasLinks(output) || liveSlots.has(index);
+    const used = Boolean(output?.s1OptionId);
+    if (!used && !live) continue;
+    output.hidden = false;
+    output.s1PromptIndex = index;
+    indexMap.set(index, kept.length);
+    kept.push(output);
+  }
+  const report = ensureOutput(node.outputs, REPORT_OUTPUT_INDEX, "STRING");
+  if (!report.name) report.name = "report_json";
+  report.type = "STRING";
+  report.hidden = false;
+  report.s1PromptIndex = REPORT_OUTPUT_INDEX;
+  indexMap.set(REPORT_OUTPUT_INDEX, kept.length);
+  kept.push(report);
+  node.outputs = kept;
+  remapOriginSlots(node, indexMap);
+  return { ok: true, visible: kept.length };
 }
 
 /**
@@ -1243,33 +1344,42 @@ export function planCollectInputs(node) {
 export function syncCollectInputs(node) {
   if (!node) return { ok: false };
   if (!Array.isArray(node.inputs)) node.inputs = [];
-  const inputs = node.inputs;
-  const existing = new Map(inputs.map((input, index) => [input?.name, index]));
-  for (const name of COLLECT_INPUT_NAMES) {
-    if (existing.has(name)) continue;
-    inputs.push({ name, type: COLLECT_TYPE, link: null, hidden: true });
-  }
-  // Keep declared Collect sockets in name order, without compacting holes.
+  const existing = new Map();
   const byName = new Map();
   const others = [];
-  for (const input of inputs) {
-    if (input && COLLECT_INPUT_NAMES.includes(input.name)) byName.set(input.name, input);
-    else others.push(input);
-  }
-  const ordered = COLLECT_INPUT_NAMES.map((name) => {
-    const input = byName.get(name) || { name, type: COLLECT_TYPE, link: null, hidden: true };
+  node.inputs.forEach((input, index) => {
+    if (input && COLLECT_INPUT_NAMES.includes(input.name)) {
+      byName.set(input.name, input);
+      existing.set(input.name, index);
+    } else if (input) {
+      others.push(input);
+    }
+  });
+  const planning = {
+    ...node,
+    inputs: COLLECT_INPUT_NAMES.map((name) => byName.get(name) || { name, type: COLLECT_TYPE, link: null }),
+    graph: node.graph,
+    id: node.id,
+  };
+  const plan = planCollectInputs(planning);
+  const liveSlots = liveTargetSlots(node);
+  const wanted = [];
+  plan.names.forEach((name, index) => {
+    const input = byName.get(name);
+    const live = inputHasLink(input, liveSlots, existing.get(name) ?? index);
+    if (live || plan.visible[index]) {
+      if (input) input.hidden = false;
+      wanted.push(name);
+    }
+  });
+  const next = wanted.map((name) => {
+    const input = byName.get(name) || { name, type: COLLECT_TYPE, link: null };
     input.type = COLLECT_TYPE;
+    input.name = name;
+    input.hidden = false;
     return input;
   });
-  node.inputs = ordered.concat(others);
-  const plan = planCollectInputs(node);
-  const liveSlots = liveTargetSlots(node);
-  plan.names.forEach((name, index) => {
-    const input = node.inputs[index];
-    const live = inputHasLink(input, liveSlots, index);
-    input.hidden = !(live || plan.visible[index]);
-    if (live) input.hidden = false;
-  });
+  node.inputs = next.concat(others);
   // Remap target_slot for graph.links after reorder, using the same care as
   // orderThemePromptInputs: never assign input.link, only rewrite the slot index.
   if (node.graph) {
@@ -1286,7 +1396,7 @@ export function syncCollectInputs(node) {
       }
     });
   }
-  return { ok: true, plan };
+  return { ok: true, plan, visible: wanted };
 }
 
 function tagsFromLibraryJson(text) {

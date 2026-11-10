@@ -1,4 +1,4 @@
-// Visual editor modal for LoRA Library, Theme Root, and Theme.
+// Visual editor modal for Theme Root and Theme. LoRA Library is drawn on the node.
 // ComfyUI loads this module because __init__.py exports WEB_DIRECTORY = "./js".
 // The modal edits theme_json or library_json. Invalid drafts are not written.
 // Prompts are sockets. Positive is the input above negative. Negative is optional. Prompts are not stored in theme_json.
@@ -26,15 +26,18 @@ import {
   DEFAULT_NONE_LABEL,
   collectGraphTags,
   syncCollectInputs,
+  expandOptionOutputs,
+  compactOptionOutputs,
 } from "./s1_model.js";
+import { installLoraLibraryNode } from "./s1_lora_node.js";
 
 const BUTTON_NAME = "Open visual editor";
 const BUTTON_LABEL = "Open visual editor";
 
 const NODE_SPECS = {
-  S1LoraLibrary: { kind: "lora", widget: "library_json", title: "LoRA Library" },
-  S1ThemeRoot: { kind: "theme", widget: "theme_json", title: "Theme Root" },
-  S1Theme: { kind: "theme", widget: "theme_json", title: "Theme" },
+  S1LoraLibrary: { kind: "lora", widget: "library_json", title: "LoRA Library", modal: false },
+  S1ThemeRoot: { kind: "theme", widget: "theme_json", title: "Theme Root", modal: true },
+  S1Theme: { kind: "theme", widget: "theme_json", title: "Theme", modal: true },
 };
 
 const FACTORIES = {
@@ -1150,7 +1153,8 @@ function fitNode(node) {
 }
 
 function attachButton(node) {
-  if (!specFor(node) || typeof node.addWidget !== "function") return;
+  const spec = specFor(node);
+  if (!spec?.modal || typeof node.addWidget !== "function") return;
   const existing = node.widgets || [];
   if (existing.some((widget) => widget?.name === BUTTON_NAME || widget?.label === BUTTON_LABEL)) return;
   let widget = null;
@@ -1213,6 +1217,21 @@ function themeNodes() {
 
 // graphToPrompt reads serializeValue when it is set, otherwise widget.value.
 // Hooking the widget covers a queue path that does not call the wrapped app methods.
+// LiteGraph copies node.outputs *before* onSerialize, so wrap serialize() itself
+// to snapshot the expanded 33-slot form. A depth counter stops a nested
+// serialize() from compacting while queuePrompt/graphToPrompt is expanded.
+let themeExpandDepth = 0;
+
+function pushThemeExpand() {
+  themeExpandDepth += 1;
+  expandAllThemeOutputs();
+}
+
+function popThemeExpand() {
+  themeExpandDepth = Math.max(0, themeExpandDepth - 1);
+  if (themeExpandDepth === 0) compactAllThemeOutputs();
+}
+
 function installThemeSerialize(node) {
   const widget = findWidget(node, "theme_json");
   if (!widget || widget.__s1ThemeSerialize) return;
@@ -1223,6 +1242,43 @@ function installThemeSerialize(node) {
     return this.value;
   };
   widget.__s1ThemeSerialize = true;
+  if (!node.__s1ThemeOutputSerialize) {
+    node.__s1ThemeOutputSerialize = true;
+    const previousSerialize = typeof node.serialize === "function" ? node.serialize : null;
+    const previousOnSerialize = node.onSerialize;
+    node.serialize = function s1ThemeSerializeOutputs(...args) {
+      expandOptionOutputs(this);
+      try {
+        if (previousSerialize) return previousSerialize.apply(this, args);
+        return typeof previousOnSerialize === "function" ? previousOnSerialize.apply(this, args) : undefined;
+      } finally {
+        if (themeExpandDepth === 0) compactOptionOutputs(this);
+      }
+    };
+    node.onSerialize = function s1ThemeOutputSerialize(info, ...rest) {
+      expandOptionOutputs(this);
+      if (info && Array.isArray(this.outputs)) {
+        // LiteGraph already snapshotted outputs; rewrite the copy to the
+        // expanded prompt indexes (report_json at 32) including s1PromptIndex.
+        info.outputs = this.outputs.map((output) => ({
+          name: output?.name,
+          type: output?.type,
+          links: output?.links,
+          slot_index: output?.slot_index,
+          localized_name: output?.localized_name,
+          s1OptionId: output?.s1OptionId,
+          s1PromptIndex: output?.s1PromptIndex,
+        }));
+      }
+      try {
+        return typeof previousOnSerialize === "function"
+          ? previousOnSerialize.call(this, info, ...rest)
+          : undefined;
+      } finally {
+        if (themeExpandDepth === 0) compactOptionOutputs(this);
+      }
+    };
+  }
 }
 
 function originForTheme(node) {
@@ -1296,18 +1352,33 @@ function applyThemePlan(nodes) {
   return plan;
 }
 
-// Rename option sockets to match theme_json. Unused pads with no live wire
-// are hidden. Frontend 1.57.6 drops a wire when a connected socket is hidden
-// or output.links is rewritten, so relinkOptionSlots never hides a live slot
-// and never assigns output.links. Invalid JSON leaves sockets alone.
+// Rename option sockets to match theme_json, then drop unused unconnected
+// pads. Frontend 1.57.6 Vue Nodes 2.0 draws every entry in node.outputs and
+// ignores slot.hidden, so compacting is what hides them. report_json stays
+// at prompt index 32 (expanded before graphToPrompt / serialize). Connected
+// sockets are never removed. output.links is never assigned.
 function syncOptionOutputs(node) {
   if (!isThemeNode(node)) return;
   orderThemePromptInputs(node);
   const plan = planOptionOutputs(widgetText(findWidget(node, "theme_json")));
   if (!plan.ok || !Array.isArray(plan.slots)) return;
+  expandOptionOutputs(node);
   relinkOptionSlots(node, plan.slots);
+  compactOptionOutputs(node);
   fitNode(node);
   node.graph?.setDirtyCanvas?.(true, true);
+}
+
+function expandAllThemeOutputs() {
+  for (const node of themeNodes()) {
+    try { expandOptionOutputs(node); } catch (exc) { console.warn("[S1] expand outputs failed", exc); }
+  }
+}
+
+function compactAllThemeOutputs() {
+  for (const node of themeNodes()) {
+    try { compactOptionOutputs(node); } catch (exc) { console.warn("[S1] compact outputs failed", exc); }
+  }
 }
 
 // Number theme ids on each loaded graph. Widget values are what queue serializes,
@@ -1353,7 +1424,19 @@ function installQueueHooks() {
       } catch (exc) {
         console.warn("[S1] theme id reconcile failed", exc);
       }
-      return original.apply(this, args);
+      pushThemeExpand();
+      const restore = () => {
+        try { popThemeExpand(); } catch (exc) { console.warn("[S1] compact after prompt failed", exc); }
+      };
+      try {
+        const result = original.apply(this, args);
+        if (result && typeof result.then === "function") return result.finally(restore);
+        restore();
+        return result;
+      } catch (exc) {
+        restore();
+        throw exc;
+      }
     };
   };
   // graphToPrompt reads widget values into the prompt. queuePrompt calls it
@@ -1428,6 +1511,7 @@ app.registerExtension({
   },
   nodeCreated(node) {
     attachButton(node);
+    installLoraLibraryNode(node);
     installCollectNode(node);
     if (!isThemeNode(node)) return;
     orderThemePromptInputs(node);
@@ -1442,7 +1526,7 @@ app.registerExtension({
     scheduleThemeReconcile();
   },
   getNodeMenuItems(node) {
-    if (!specFor(node)) return;
+    if (!specFor(node)?.modal) return;
     return [{ content: "Open visual editor", callback: () => { openEditorForNode(node); } }];
   },
 });

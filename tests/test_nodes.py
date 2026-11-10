@@ -63,6 +63,9 @@ import {
   DEFAULT_NONE_LABEL,
   syncCollectInputs,
   collectGraphTags,
+  expandOptionOutputs,
+  compactOptionOutputs,
+  REPORT_OUTPUT_INDEX,
 } from "./js/s1_model.js";
 
 function assert(cond, message) {
@@ -436,8 +439,18 @@ const siblingSync = relinkOptionSlots(sibling, planned.slots);
 assert(siblingSync.dropped === 0, "an unused sibling pad does not drop a live option wire");
 assert(sibling.graph.links[21].origin_slot === 0, "selected slot stays linked");
 assert(sibling.outputs[0].hidden === false && sibling.outputs[0].links.includes(21), "live option stays visible");
-assert(sibling.outputs[2].hidden === true && sibling.outputs[2].name === "·", "unused unconnected pad is hidden");
-assert(sibling.graph.links[21].origin_slot === 0 && sibling.outputs[0].links.includes(21), "hiding a pad does not drop a live option wire");
+assert(sibling.outputs[2].hidden === true && sibling.outputs[2].name === "·", "unused unconnected pad is marked hidden before compact");
+assert(sibling.graph.links[21].origin_slot === 0 && sibling.outputs[0].links.includes(21), "marking a pad hidden does not drop a live option wire");
+const siblingCompact = compactOptionOutputs(sibling);
+assert(siblingCompact.ok && sibling.outputs.length === 3, "compact drops unused pads and keeps report");
+assert(sibling.outputs[0].s1OptionId === "anime" && sibling.outputs[0].hidden === false, "live option remains first");
+assert(sibling.outputs[1].s1OptionId === "none", "none option stays");
+assert(sibling.outputs[2].name === "report_json" && sibling.outputs[2].s1PromptIndex === 32, "report stays last with prompt index 32");
+assert(sibling.graph.links[21].origin_slot === 0 && sibling.outputs[0].links.includes(21), "compact does not drop a live option wire");
+const siblingExpand = expandOptionOutputs(sibling);
+assert(siblingExpand.ok && sibling.outputs.length === 33, "expand restores 32 options plus report");
+assert(sibling.outputs[32].name === "report_json" && sibling.outputs[32].s1PromptIndex === 32, "report returns to index 32");
+assert(sibling.graph.links[21].origin_slot === 0, "expand puts the live option wire back on slot 0");
 
 const livePad = {
   id: 13,
@@ -458,6 +471,14 @@ assert(livePad.outputs[5].hidden === false, "a pad with a live wire is not hidde
 assert(livePad.graph.links[22].origin_slot === 5, "live pad wire is kept");
 assert(livePad.outputs[5].links.includes(22), "live pad link id stays on the output");
 assert(livePad.outputs[5].name === "option_6", "a linked pad name is not blanked");
+compactOptionOutputs(livePad);
+const liveKept = livePad.outputs.find((output) => output.s1PromptIndex === 5);
+assert(liveKept && liveKept.hidden === false, "a live unused-planned pad is kept when compacting");
+assert(livePad.graph.links[22].origin_slot === livePad.outputs.indexOf(liveKept), "live pad wire follows the compacted index");
+assert(liveKept.links.includes(22), "live pad link id stays on the output after compact");
+expandOptionOutputs(livePad);
+assert(livePad.outputs[5].s1PromptIndex === 5, "expand puts the live pad back at prompt index 5");
+assert(livePad.graph.links[22].origin_slot === 5, "expand restores the live pad wire to slot 5");
 
 // Frontend 1.57: graph.links is a Map, ids may be strings, and the slot's
 // output.links mirror can be null. CamelCase originId/originSlot counts.
@@ -477,7 +498,11 @@ assert(linksOnlySync.first === true && linksOnlySync.dropped === 0 && linksOnlyS
 assert(linksOnly.outputs[0].hidden === false && linksOnly.outputs[0].s1OptionId === "anime", "map wire keeps the socket");
 assert(linksOnly.outputs[0].links === null, "first sync does not rewrite a null links mirror");
 assert(linksOnly.graph.links.get(30).originSlot === 0, "map link stays on the option");
-assert(linksOnly.outputs[2].hidden === true && linksOnly.outputs[2].name === "·", "unlinked pad is hidden");
+assert(linksOnly.outputs[2].hidden === true && linksOnly.outputs[2].name === "·", "unlinked pad is marked hidden before compact");
+compactOptionOutputs(linksOnly);
+assert(linksOnly.outputs.some((output) => output.name === "report_json" && output.s1PromptIndex === 32), "compact keeps report_json");
+assert(!linksOnly.outputs.some((output, index) => index < linksOnly.outputs.length - 1 && output.hidden), "compacted option sockets are visible");
+assert(linksOnly.graph.links.get(30).originSlot === 0, "map link stays on the option after compact");
 
 class StoreOutput {
   constructor(name, optionId, ids) {
@@ -586,7 +611,7 @@ assert(collectSync.ok, "collect sync ok");
 assert(collectNode.inputs[0].name === "a" && collectNode.inputs[0].hidden === false, "a stays visible");
 assert(collectNode.inputs[1].name === "b" && collectNode.inputs[1].hidden === false, "b stays visible");
 assert(collectNode.inputs[2].name === "c" && collectNode.inputs[2].hidden === false, "empty c appears");
-assert(collectNode.inputs[3].hidden === true, "later collect pads hide");
+assert(collectNode.inputs.length === 3, "later collect pads are not kept on the node");
 assert(collectNode.graph.links[1].target_slot === 0 && collectNode.graph.links[2].target_slot === 1, "collect wires stay");
 
 const tags = collectGraphTags({
@@ -1316,7 +1341,19 @@ class NodeTests(unittest.TestCase):
         node = shutil.which("node")
         if node is None:
             self.skipTest("node is not installed")
-        for name in ("s1_editors.js", "s1_model.js"):
+        self.assertIn("installLoraLibraryNode", editors)
+        self.assertIn("compactOptionOutputs", editors)
+        self.assertIn("expandOptionOutputs", editors)
+        self.assertIn("modal: false", editors)
+        lora_node = (ROOT / "js" / "s1_lora_node.js").read_text(encoding="utf-8")
+        self.assertIn("addDOMWidget", lora_node)
+        self.assertIn("Toggle All", lora_node)
+        self.assertIn("＋ Add Lora", lora_node)
+        self.assertIn("enabled_default", lora_node)
+        self.assertIn("strength_clip = number", lora_node)
+        self.assertIn("library_json", lora_node)
+        self.assertIn("hideLibraryJsonWidget", lora_node)
+        for name in ("s1_editors.js", "s1_model.js", "s1_lora_node.js"):
             checked = subprocess.run(
                 [node, "--check", str(ROOT / "js" / name)],
                 check=False,
