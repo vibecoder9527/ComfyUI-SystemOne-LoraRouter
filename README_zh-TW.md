@@ -8,6 +8,8 @@
 
 完整規格見 [SPEC.md](SPEC.md)。舊版工作流程（`enable_json`、`theme_result`、主題庫、序列）的升級方式見 [MIGRATION.md](MIGRATION.md)。
 
+<img width="1420" height="717" alt="image" src="https://github.com/user-attachments/assets/da821ec8-0d73-497c-a8ec-5b7992bce843" />
+
 ## 安裝
 
 放在 `custom_nodes` 裡的資料夾名稱必須是 `ComfyUI-SystemOne-LoraRouter`。
