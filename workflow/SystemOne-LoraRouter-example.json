@@ -1,0 +1,2147 @@
+{
+  "id": "679241a6-10bb-416c-a569-ccb4d3ac6db3",
+  "revision": 0,
+  "last_node_id": 286,
+  "last_link_id": 564,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "UNETLoader",
+      "pos": [
+        606.6280588011347,
+        199.88860159502292
+      ],
+      "size": [
+        400,
+        90
+      ],
+      "flags": {
+        "collapsed": true
+      },
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "MODEL",
+          "type": "MODEL",
+          "slot_index": 0,
+          "links": [
+            527
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.41.0",
+        "Node name for S&R": "UNETLoader",
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "version": "7.8",
+          "input_ue_unconnectable": {}
+        }
+      },
+      "widgets_values": [
+        "MOSS/pornmasterMoss_v1.safetensors",
+        "default"
+      ],
+      "widgets_values_named": {
+        "unet_name": "MOSS/pornmasterMoss_v1.safetensors",
+        "weight_dtype": "default"
+      },
+      "color": "#223",
+      "bgcolor": "#335"
+    },
+    {
+      "id": 3,
+      "type": "CLIPLoader",
+      "pos": [
+        326.23144538172403,
+        26.933475921890647
+      ],
+      "size": [
+        400,
+        110
+      ],
+      "flags": {
+        "collapsed": true
+      },
+      "order": 1,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "CLIP",
+          "type": "CLIP",
+          "slot_index": 0,
+          "links": [
+            3,
+            4
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.41.0",
+        "Node name for S&R": "CLIPLoader",
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "version": "7.8",
+          "input_ue_unconnectable": {}
+        }
+      },
+      "widgets_values": [
+        "MOSS/qwen3.5-9B-int8-convrot.safetensors",
+        "moss_image",
+        "default"
+      ],
+      "widgets_values_named": {
+        "clip_name": "MOSS/qwen3.5-9B-int8-convrot.safetensors",
+        "type": "moss_image",
+        "device": "default"
+      },
+      "color": "#432",
+      "bgcolor": "#653"
+    },
+    {
+      "id": 4,
+      "type": "VAELoader",
+      "pos": [
+        607.4,
+        159.5999999999999
+      ],
+      "size": [
+        400,
+        60
+      ],
+      "flags": {
+        "collapsed": true
+      },
+      "order": 2,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "VAE",
+          "type": "VAE",
+          "slot_index": 0,
+          "links": [
+            46
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.41.0",
+        "Node name for S&R": "VAELoader",
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "version": "7.8",
+          "input_ue_unconnectable": {}
+        }
+      },
+      "widgets_values": [
+        "moss-image-vae.safetensors"
+      ],
+      "widgets_values_named": {
+        "vae_name": "moss-image-vae.safetensors"
+      },
+      "color": "#322",
+      "bgcolor": "#533"
+    },
+    {
+      "id": 5,
+      "type": "CLIPTextEncode",
+      "pos": [
+        611.0510000000005,
+        26.62000000000001
+      ],
+      "size": [
+        210,
+        88
+      ],
+      "flags": {
+        "collapsed": true
+      },
+      "order": 7,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "link": 3
+        },
+        {
+          "name": "text",
+          "type": "STRING",
+          "widget": {
+            "name": "text"
+          },
+          "link": 516
+        }
+      ],
+      "outputs": [
+        {
+          "name": "CONDITIONING",
+          "type": "CONDITIONING",
+          "slot_index": 0,
+          "links": [
+            39
+          ]
+        }
+      ],
+      "title": "Positive Condition",
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.41.0",
+        "Node name for S&R": "CLIPTextEncode",
+        "ue_properties": {
+          "widget_ue_connectable": {
+            "text": true
+          },
+          "version": "7.8",
+          "input_ue_unconnectable": {}
+        }
+      },
+      "widgets_values": [
+        ""
+      ],
+      "widgets_values_named": {
+        "text": ""
+      },
+      "color": "#232",
+      "bgcolor": "#353"
+    },
+    {
+      "id": 6,
+      "type": "CLIPTextEncode",
+      "pos": [
+        602.8000000000001,
+        77.09999999999991
+      ],
+      "size": [
+        410,
+        110
+      ],
+      "flags": {
+        "collapsed": true
+      },
+      "order": 6,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "link": 4
+        }
+      ],
+      "outputs": [
+        {
+          "name": "CONDITIONING",
+          "type": "CONDITIONING",
+          "slot_index": 0,
+          "links": [
+            40
+          ]
+        }
+      ],
+      "title": "Negative Prompt",
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.41.0",
+        "Node name for S&R": "CLIPTextEncode",
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "version": "7.8",
+          "input_ue_unconnectable": {}
+        }
+      },
+      "widgets_values": [
+        "nsfw, worst quality, bad anatomy, watermark, jpeg artifact,\nextra fingers, bad hands, fused limbs, blurry, lowres,\ncropped"
+      ],
+      "widgets_values_named": {
+        "text": "nsfw, worst quality, bad anatomy, watermark, jpeg artifact,\nextra fingers, bad hands, fused limbs, blurry, lowres,\ncropped"
+      },
+      "color": "#332922",
+      "bgcolor": "#593930"
+    },
+    {
+      "id": 7,
+      "type": "EmptyFlux2LatentImage",
+      "pos": [
+        604.1,
+        119.99999999999991
+      ],
+      "size": [
+        400,
+        110
+      ],
+      "flags": {
+        "collapsed": true
+      },
+      "order": 3,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "LATENT",
+          "type": "LATENT",
+          "slot_index": 0,
+          "links": [
+            41
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.41.0",
+        "Node name for S&R": "EmptyFlux2LatentImage",
+        "ue_properties": {
+          "widget_ue_connectable": {
+            "width": true,
+            "height": true
+          },
+          "version": "7.8",
+          "input_ue_unconnectable": {}
+        }
+      },
+      "widgets_values": [
+        1040,
+        1520,
+        1
+      ],
+      "widgets_values_named": {
+        "width": 1040,
+        "height": 1520,
+        "batch_size": 1
+      },
+      "color": "#323",
+      "bgcolor": "#535"
+    },
+    {
+      "id": 22,
+      "type": "acdea43b-c278-4461-9ddf-b8fefd4d9032",
+      "pos": [
+        891.2484810326733,
+        5.168293691078929
+      ],
+      "size": [
+        210,
+        140
+      ],
+      "flags": {
+        "collapsed": false
+      },
+      "order": 10,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "positive",
+          "type": "CONDITIONING",
+          "link": 39
+        },
+        {
+          "name": "negative",
+          "type": "CONDITIONING",
+          "link": 40
+        },
+        {
+          "name": "latent_image",
+          "type": "LATENT",
+          "link": 41
+        },
+        {
+          "name": "vae",
+          "type": "VAE",
+          "link": 46
+        },
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 528
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            558
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.42.0",
+        "ue_properties": {
+          "widget_ue_connectable": {},
+          "input_ue_unconnectable": {},
+          "version": "7.8"
+        },
+        "previewExposures": [
+          {
+            "name": "$$canvas-image-preview",
+            "sourceNodeId": "17",
+            "sourcePreviewName": "$$canvas-image-preview"
+          }
+        ]
+      },
+      "widgets_values": [
+        541916613332803
+      ],
+      "widgets_values_named": {
+        "seed": 541916613332803
+      },
+      "color": "#2a363b",
+      "bgcolor": "#3f5159"
+    },
+    {
+      "id": 271,
+      "type": "PrimitiveStringMultiline",
+      "pos": [
+        156.42243438421306,
+        87.92070349187475
+      ],
+      "size": [
+        400,
+        200
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "STRING",
+          "type": "STRING",
+          "links": [
+            516,
+            526
+          ]
+        }
+      ],
+      "title": "Main Prompt",
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.44.0",
+        "Node name for S&R": "PrimitiveStringMultiline"
+      },
+      "widgets_values": [
+        "A young East Asian woman in her mid-20s standing in soft natural window light, wearing a fitted white cotton tank top, large natural breasts with soft weight and slight asymmetry visible under the thin fabric, gentle cleavage, realistic skin texture with subtle pores, long black hair falling over one shoulder, calm expression looking slightly off-camera, waist-up framing, shallow depth of field, warm daylight from the left, photorealistic style, subtle film grain."
+      ],
+      "widgets_values_named": {
+        "value": "A young East Asian woman in her mid-20s standing in soft natural window light, wearing a fitted white cotton tank top, large natural breasts with soft weight and slight asymmetry visible under the thin fabric, gentle cleavage, realistic skin texture with subtle pores, long black hair falling over one shoulder, calm expression looking slightly off-camera, waist-up framing, shallow depth of field, warm daylight from the left, photorealistic style, subtle film grain."
+      }
+    },
+    {
+      "id": 273,
+      "type": "S1LoraLibrary",
+      "pos": [
+        64.2004325463547,
+        -504.2916166650629
+      ],
+      "size": [
+        457.84534250856956,
+        269.07036257542484
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "lora_lib",
+          "type": "S1_LORA_LIB",
+          "links": [
+            524
+          ]
+        }
+      ],
+      "properties": {
+        "aux_id": "ComfyUI-SystemOne-LoraRouter",
+        "ver": "648a1a20133b90855620ed69a39b99c3ebfb7338",
+        "Node name for S&R": "S1LoraLibrary"
+      },
+      "widgets_values": [
+        "{\n  \"version\": 1,\n  \"loras\": [\n    {\n      \"lora_id\": \"lora_1\",\n      \"name\": \"MOSS/moss_image_sft_4_steps_lora_v2_600_avg_rank_72_bf16.safetensors\",\n      \"strength_model\": 1,\n      \"strength_clip\": 1\n    },\n    {\n      \"lora_id\": \"lora_2\",\n      \"name\": \"MOSS/MysticXXX-Moss-V1.safetensors\",\n      \"strength_model\": 1,\n      \"strength_clip\": 1\n    },\n    {\n      \"lora_id\": \"lora_3\",\n      \"name\": \"MOSS/age slider.safetensors\",\n      \"strength_model\": 1,\n      \"strength_clip\": 1,\n      \"tags\": [\n        \"age\"\n      ],\n      \"enabled_default\": false,\n      \"slider\": true\n    },\n    {\n      \"lora_id\": \"lora_4\",\n      \"name\": \"MOSS/Moss-BreastSlider-v1.safetensors\",\n      \"strength_model\": 1,\n      \"strength_clip\": 1,\n      \"tags\": [\n        \"boobs\"\n      ],\n      \"enabled_default\": false,\n      \"slider\": true\n    }\n  ]\n}"
+      ],
+      "widgets_values_named": {
+        "library_json": "{\n  \"version\": 1,\n  \"loras\": [\n    {\n      \"lora_id\": \"lora_1\",\n      \"name\": \"MOSS/moss_image_sft_4_steps_lora_v2_600_avg_rank_72_bf16.safetensors\",\n      \"strength_model\": 1,\n      \"strength_clip\": 1\n    },\n    {\n      \"lora_id\": \"lora_2\",\n      \"name\": \"MOSS/MysticXXX-Moss-V1.safetensors\",\n      \"strength_model\": 1,\n      \"strength_clip\": 1\n    },\n    {\n      \"lora_id\": \"lora_3\",\n      \"name\": \"MOSS/age slider.safetensors\",\n      \"strength_model\": 1,\n      \"strength_clip\": 1,\n      \"tags\": [\n        \"age\"\n      ],\n      \"enabled_default\": false,\n      \"slider\": true\n    },\n    {\n      \"lora_id\": \"lora_4\",\n      \"name\": \"MOSS/Moss-BreastSlider-v1.safetensors\",\n      \"strength_model\": 1,\n      \"strength_clip\": 1,\n      \"tags\": [\n        \"boobs\"\n      ],\n      \"enabled_default\": false,\n      \"slider\": true\n    }\n  ]\n}"
+      }
+    },
+    {
+      "id": 276,
+      "type": "104e1728-2005-4240-9880-60a0349b2be2",
+      "pos": [
+        290.6109830421148,
+        -130.9799263372442
+      ],
+      "size": [
+        225,
+        108.39997711181641
+      ],
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "positive",
+          "type": "STRING",
+          "link": 526
+        },
+        {
+          "name": "negative",
+          "shape": 7,
+          "type": "STRING",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "decision",
+          "type": "S1_DECISION",
+          "links": [
+            525
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.44.2",
+        "previewExposures": []
+      }
+    },
+    {
+      "id": 279,
+      "type": "S1LoraAggregate",
+      "pos": [
+        577.332809069605,
+        -166.5884401964028
+      ],
+      "size": [
+        270,
+        118
+      ],
+      "flags": {},
+      "order": 9,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 527
+        },
+        {
+          "name": "lora_lib",
+          "type": "S1_LORA_LIB",
+          "link": 524
+        },
+        {
+          "name": "decision",
+          "type": "S1_DECISION",
+          "link": 525
+        },
+        {
+          "name": "clip",
+          "shape": 7,
+          "type": "CLIP",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "links": [
+            528
+          ]
+        },
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "links": null
+        },
+        {
+          "name": "report_json",
+          "type": "STRING",
+          "links": [
+            536
+          ]
+        }
+      ],
+      "properties": {
+        "aux_id": "ComfyUI-SystemOne-LoraRouter",
+        "ver": "648a1a20133b90855620ed69a39b99c3ebfb7338",
+        "Node name for S&R": "S1LoraAggregate"
+      },
+      "widgets_values": [
+        "passthrough"
+      ],
+      "widgets_values_named": {
+        "on_error": "passthrough"
+      }
+    },
+    {
+      "id": 280,
+      "type": "Display Any (rgthree)",
+      "pos": [
+        893.7757403436119,
+        -299.7753717546134
+      ],
+      "size": [
+        376.2569155998192,
+        259.5660500234691
+      ],
+      "flags": {},
+      "order": 11,
+      "mode": 0,
+      "inputs": [
+        {
+          "dir": 3,
+          "name": "source",
+          "type": "*",
+          "link": 536
+        }
+      ],
+      "outputs": [],
+      "properties": {
+        "cnr_id": "rgthree-comfy",
+        "ver": "1.0.2610300006",
+        "Node name for S&R": "Display Any (rgthree)"
+      },
+      "widgets_values": [
+        "{\"tags\":[\"age:1\",\"boobs:0.5\"],\"themes\":[{\"theme_id\":\"theme_1\",\"status\":\"ok\",\"enabled\":true,\"selected\":[\"option_3\"],\"tags\":[\"age:1\"],\"select_mode\":\"single\",\"reason\":\"ran\",\"raw\":{\"stub\":false,\"answers\":{\"theme_1\":{\"type\":\"choice\",\"choice\":\"option_3\",\"probabilities\":{\"option_1\":0.014132465755102729,\"option_2\":0.01847184789809584,\"option_3\":0.9475909826745862,\"option_4\":0.019804703672215346},\"confidence\":0.9301213102327816}}}},{\"theme_id\":\"theme_2\",\"status\":\"ok\",\"enabled\":true,\"selected\":[\"option_2\"],\"tags\":[\"boobs:0.5\"],\"select_mode\":\"single\",\"reason\":\"ran\",\"raw\":{\"stub\":false,\"answers\":{\"theme_2\":{\"type\":\"choice\",\"choice\":\"option_2\",\"probabilities\":{\"option_1\":0.013093575482174798,\"option_2\":0.5444500190576438,\"option_3\":0.39709579099860026,\"option_4\":0.029048674291303457,\"option_5\":0.0163119401702776},\"confidence\":0.4305625238220547}}}}],\"matched\":[{\"lora_id\":\"lora_1\",\"name\":\"MOSS/moss_image_sft_4_steps_lora_v2_600_avg_rank_72_bf16.safetensors\",\"strength_model\":1.0,\"strength_clip\":1.0,\"matched_tags\":[],\"sources\":[],\"slider\":false,\"weight_source\":{\"kind\":\"library\"},\"warnings\":[]},{\"lora_id\":\"lora_2\",\"name\":\"Krea2/MysticXXX_KREA2_v2_stripped.safetensors\",\"strength_model\":1.0,\"strength_clip\":1.0,\"matched_tags\":[],\"sources\":[],\"slider\":false,\"weight_source\":{\"kind\":\"library\"},\"warnings\":[]},{\"lora_id\":\"lora_3\",\"name\":\"MOSS/age slider.safetensors\",\"strength_model\":1.0,\"strength_clip\":1.0,\"matched_tags\":[\"age\"],\"sources\":[[\"theme_1\",\"option_3\",\"age:1\"]],\"slider\":true,\"weight_source\":{\"kind\":\"tag\",\"theme_id\":\"theme_1\",\"option_id\":\"option_3\",\"tag\":\"age:1\",\"tag_name\":\"age\",\"weight\":1.0,\"requested_weight\":1.0},\"warnings\":[]},{\"lora_id\":\"lora_4\",\"name\":\"MOSS/Moss-BreastSlider-v1.safetensors\",\"strength_model\":0.5,\"strength_clip\":0.5,\"matched_tags\":[\"boobs\"],\"sources\":[[\"theme_2\",\"option_2\",\"boobs:0.5\"]],\"slider\":true,\"weight_source\":{\"kind\":\"tag\",\"theme_id\":\"theme_2\",\"option_id\":\"option_2\",\"tag\":\"boobs:0.5\",\"tag_name\":\"boobs\",\"weight\":0.5,\"requested_weight\":0.5},\"warnings\":[]}],\"skipped\":[],\"applied\":[{\"lora_id\":\"lora_1\",\"name\":\"MOSS/moss_image_sft_4_steps_lora_v2_600_avg_rank_72_bf16.safetensors\",\"strength_model\":1.0,\"strength_clip\":1.0,\"sources\":[],\"loaded\":true,\"slider\":false,\"weight_source\":{\"kind\":\"library\"},\"warnings\":[]},{\"lora_id\":\"lora_2\",\"name\":\"Krea2/MysticXXX_KREA2_v2_stripped.safetensors\",\"strength_model\":1.0,\"strength_clip\":1.0,\"sources\":[],\"loaded\":true,\"slider\":false,\"weight_source\":{\"kind\":\"library\"},\"warnings\":[]},{\"lora_id\":\"lora_3\",\"name\":\"MOSS/age slider.safetensors\",\"strength_model\":1.0,\"strength_clip\":1.0,\"sources\":[[\"theme_1\",\"option_3\",\"age:1\"]],\"loaded\":true,\"slider\":true,\"weight_source\":{\"kind\":\"tag\",\"theme_id\":\"theme_1\",\"option_id\":\"option_3\",\"tag\":\"age:1\",\"tag_name\":\"age\",\"weight\":1.0,\"requested_weight\":1.0},\"warnings\":[]},{\"lora_id\":\"lora_4\",\"name\":\"MOSS/Moss-BreastSlider-v1.safetensors\",\"strength_model\":0.5,\"strength_clip\":0.5,\"sources\":[[\"theme_2\",\"option_2\",\"boobs:0.5\"]],\"loaded\":true,\"slider\":true,\"weight_source\":{\"kind\":\"tag\",\"theme_id\":\"theme_2\",\"option_id\":\"option_2\",\"tag\":\"boobs:0.5\",\"tag_name\":\"boobs\",\"weight\":0.5,\"requested_weight\":0.5},\"warnings\":[]}],\"errors\":[],\"notes\":[\"Patched 4 LoRA(s) onto MODEL.\"],\"warnings\":[]}"
+      ],
+      "widgets_values_named": {
+        "output": "{\"tags\":[\"age:1\",\"boobs:0.5\"],\"themes\":[{\"theme_id\":\"theme_1\",\"status\":\"ok\",\"enabled\":true,\"selected\":[\"option_3\"],\"tags\":[\"age:1\"],\"select_mode\":\"single\",\"reason\":\"ran\",\"raw\":{\"stub\":false,\"answers\":{\"theme_1\":{\"type\":\"choice\",\"choice\":\"option_3\",\"probabilities\":{\"option_1\":0.014132465755102729,\"option_2\":0.01847184789809584,\"option_3\":0.9475909826745862,\"option_4\":0.019804703672215346},\"confidence\":0.9301213102327816}}}},{\"theme_id\":\"theme_2\",\"status\":\"ok\",\"enabled\":true,\"selected\":[\"option_2\"],\"tags\":[\"boobs:0.5\"],\"select_mode\":\"single\",\"reason\":\"ran\",\"raw\":{\"stub\":false,\"answers\":{\"theme_2\":{\"type\":\"choice\",\"choice\":\"option_2\",\"probabilities\":{\"option_1\":0.013093575482174798,\"option_2\":0.5444500190576438,\"option_3\":0.39709579099860026,\"option_4\":0.029048674291303457,\"option_5\":0.0163119401702776},\"confidence\":0.4305625238220547}}}}],\"matched\":[{\"lora_id\":\"lora_1\",\"name\":\"MOSS/moss_image_sft_4_steps_lora_v2_600_avg_rank_72_bf16.safetensors\",\"strength_model\":1.0,\"strength_clip\":1.0,\"matched_tags\":[],\"sources\":[],\"slider\":false,\"weight_source\":{\"kind\":\"library\"},\"warnings\":[]},{\"lora_id\":\"lora_2\",\"name\":\"Krea2/MysticXXX_KREA2_v2_stripped.safetensors\",\"strength_model\":1.0,\"strength_clip\":1.0,\"matched_tags\":[],\"sources\":[],\"slider\":false,\"weight_source\":{\"kind\":\"library\"},\"warnings\":[]},{\"lora_id\":\"lora_3\",\"name\":\"MOSS/age slider.safetensors\",\"strength_model\":1.0,\"strength_clip\":1.0,\"matched_tags\":[\"age\"],\"sources\":[[\"theme_1\",\"option_3\",\"age:1\"]],\"slider\":true,\"weight_source\":{\"kind\":\"tag\",\"theme_id\":\"theme_1\",\"option_id\":\"option_3\",\"tag\":\"age:1\",\"tag_name\":\"age\",\"weight\":1.0,\"requested_weight\":1.0},\"warnings\":[]},{\"lora_id\":\"lora_4\",\"name\":\"MOSS/Moss-BreastSlider-v1.safetensors\",\"strength_model\":0.5,\"strength_clip\":0.5,\"matched_tags\":[\"boobs\"],\"sources\":[[\"theme_2\",\"option_2\",\"boobs:0.5\"]],\"slider\":true,\"weight_source\":{\"kind\":\"tag\",\"theme_id\":\"theme_2\",\"option_id\":\"option_2\",\"tag\":\"boobs:0.5\",\"tag_name\":\"boobs\",\"weight\":0.5,\"requested_weight\":0.5},\"warnings\":[]}],\"skipped\":[],\"applied\":[{\"lora_id\":\"lora_1\",\"name\":\"MOSS/moss_image_sft_4_steps_lora_v2_600_avg_rank_72_bf16.safetensors\",\"strength_model\":1.0,\"strength_clip\":1.0,\"sources\":[],\"loaded\":true,\"slider\":false,\"weight_source\":{\"kind\":\"library\"},\"warnings\":[]},{\"lora_id\":\"lora_2\",\"name\":\"Krea2/MysticXXX_KREA2_v2_stripped.safetensors\",\"strength_model\":1.0,\"strength_clip\":1.0,\"sources\":[],\"loaded\":true,\"slider\":false,\"weight_source\":{\"kind\":\"library\"},\"warnings\":[]},{\"lora_id\":\"lora_3\",\"name\":\"MOSS/age slider.safetensors\",\"strength_model\":1.0,\"strength_clip\":1.0,\"sources\":[[\"theme_1\",\"option_3\",\"age:1\"]],\"loaded\":true,\"slider\":true,\"weight_source\":{\"kind\":\"tag\",\"theme_id\":\"theme_1\",\"option_id\":\"option_3\",\"tag\":\"age:1\",\"tag_name\":\"age\",\"weight\":1.0,\"requested_weight\":1.0},\"warnings\":[]},{\"lora_id\":\"lora_4\",\"name\":\"MOSS/Moss-BreastSlider-v1.safetensors\",\"strength_model\":0.5,\"strength_clip\":0.5,\"sources\":[[\"theme_2\",\"option_2\",\"boobs:0.5\"]],\"loaded\":true,\"slider\":true,\"weight_source\":{\"kind\":\"tag\",\"theme_id\":\"theme_2\",\"option_id\":\"option_2\",\"tag\":\"boobs:0.5\",\"tag_name\":\"boobs\",\"weight\":0.5,\"requested_weight\":0.5},\"warnings\":[]}],\"errors\":[],\"notes\":[\"Patched 4 LoRA(s) onto MODEL.\"],\"warnings\":[]}"
+      }
+    },
+    {
+      "id": 286,
+      "type": "S1SaveImageScrubbed",
+      "pos": [
+        1281.3571978550303,
+        -399.97858984212286
+      ],
+      "size": [
+        811.7457778933799,
+        725.6412416971268
+      ],
+      "flags": {},
+      "order": 12,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 558
+        }
+      ],
+      "outputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "links": null
+        }
+      ],
+      "properties": {
+        "aux_id": "ComfyUI-SystemOne-LoraRouter",
+        "ver": "00a9c8c54e3316d647dceb6e2006651df8e481fb",
+        "Node name for S&R": "S1SaveImageScrubbed"
+      },
+      "widgets_values": [
+        "moss_image/n"
+      ],
+      "widgets_values_named": {
+        "filename_prefix": "moss_image/n"
+      }
+    }
+  ],
+  "links": [
+    [
+      3,
+      3,
+      0,
+      5,
+      0,
+      "CLIP"
+    ],
+    [
+      4,
+      3,
+      0,
+      6,
+      0,
+      "CLIP"
+    ],
+    [
+      39,
+      5,
+      0,
+      22,
+      0,
+      "CONDITIONING"
+    ],
+    [
+      40,
+      6,
+      0,
+      22,
+      1,
+      "CONDITIONING"
+    ],
+    [
+      41,
+      7,
+      0,
+      22,
+      2,
+      "LATENT"
+    ],
+    [
+      46,
+      4,
+      0,
+      22,
+      3,
+      "VAE"
+    ],
+    [
+      516,
+      271,
+      0,
+      5,
+      1,
+      "STRING"
+    ],
+    [
+      524,
+      273,
+      0,
+      279,
+      1,
+      "S1_LORA_LIB"
+    ],
+    [
+      525,
+      276,
+      0,
+      279,
+      2,
+      "S1_DECISION"
+    ],
+    [
+      526,
+      271,
+      0,
+      276,
+      0,
+      "STRING"
+    ],
+    [
+      527,
+      1,
+      0,
+      279,
+      0,
+      "MODEL"
+    ],
+    [
+      528,
+      279,
+      0,
+      22,
+      4,
+      "MODEL"
+    ],
+    [
+      536,
+      279,
+      2,
+      280,
+      0,
+      "STRING"
+    ],
+    [
+      558,
+      22,
+      0,
+      286,
+      0,
+      "IMAGE"
+    ]
+  ],
+  "groups": [],
+  "definitions": {
+    "subgraphs": [
+      {
+        "id": "acdea43b-c278-4461-9ddf-b8fefd4d9032",
+        "version": 1,
+        "state": {
+          "lastGroupId": 3,
+          "lastNodeId": 286,
+          "lastLinkId": 564,
+          "lastRerouteId": 0
+        },
+        "revision": 0,
+        "config": {},
+        "name": "KSampler",
+        "inputNode": {
+          "id": -10,
+          "bounding": [
+            952,
+            861,
+            128,
+            168
+          ]
+        },
+        "outputNode": {
+          "id": -20,
+          "bounding": [
+            1740,
+            871,
+            128,
+            68
+          ]
+        },
+        "inputs": [
+          {
+            "id": "1df5480c-2387-420c-b7b7-e62ec16d4a48",
+            "name": "positive",
+            "type": "CONDITIONING",
+            "linkIds": [
+              31
+            ],
+            "localized_name": "positive",
+            "pos": [
+              1056,
+              885
+            ]
+          },
+          {
+            "id": "bba00d67-5613-4c7e-b387-bd300121c4f7",
+            "name": "negative",
+            "type": "CONDITIONING",
+            "linkIds": [
+              30
+            ],
+            "localized_name": "negative",
+            "pos": [
+              1056,
+              905
+            ]
+          },
+          {
+            "id": "033c7921-b476-4891-934c-3d6e0b80fb5a",
+            "name": "latent_image",
+            "type": "LATENT",
+            "linkIds": [
+              29
+            ],
+            "localized_name": "latent_image",
+            "pos": [
+              1056,
+              925
+            ]
+          },
+          {
+            "id": "a56327f1-2eee-4cf7-8d93-9981715a9ef2",
+            "name": "seed",
+            "type": "INT",
+            "linkIds": [
+              44
+            ],
+            "pos": [
+              1056,
+              945
+            ]
+          },
+          {
+            "id": "b0d42a87-98ff-4096-9ff8-d56adc8d116f",
+            "name": "vae",
+            "type": "VAE",
+            "linkIds": [
+              45
+            ],
+            "pos": [
+              1056,
+              965
+            ]
+          },
+          {
+            "id": "9947b640-40a6-4054-bfcd-16ef2072358c",
+            "name": "model",
+            "type": "MODEL",
+            "linkIds": [
+              47
+            ],
+            "pos": [
+              1056,
+              985
+            ]
+          }
+        ],
+        "outputs": [
+          {
+            "id": "7fe96b7d-8c5b-4de6-b93f-506dd8f8b2fd",
+            "name": "IMAGE",
+            "type": "IMAGE",
+            "linkIds": [
+              28
+            ],
+            "localized_name": "IMAGE",
+            "pos": [
+              1764,
+              895
+            ]
+          }
+        ],
+        "widgets": [],
+        "nodes": [
+          {
+            "id": 17,
+            "type": "KSampler",
+            "pos": [
+              1140,
+              640
+            ],
+            "size": [
+              320,
+              580
+            ],
+            "flags": {},
+            "order": 0,
+            "mode": 0,
+            "inputs": [
+              {
+                "localized_name": "模型",
+                "name": "model",
+                "type": "MODEL",
+                "link": 47
+              },
+              {
+                "localized_name": "正向條件",
+                "name": "positive",
+                "type": "CONDITIONING",
+                "link": 31
+              },
+              {
+                "localized_name": "負向條件",
+                "name": "negative",
+                "type": "CONDITIONING",
+                "link": 30
+              },
+              {
+                "localized_name": "潛在空間影像",
+                "name": "latent_image",
+                "type": "LATENT",
+                "link": 29
+              },
+              {
+                "localized_name": "種子",
+                "name": "seed",
+                "type": "INT",
+                "widget": {
+                  "name": "seed"
+                },
+                "link": 44
+              }
+            ],
+            "outputs": [
+              {
+                "localized_name": "latent (潛空間)",
+                "name": "LATENT",
+                "type": "LATENT",
+                "slot_index": 0,
+                "links": [
+                  24
+                ]
+              }
+            ],
+            "properties": {
+              "cnr_id": "comfy-core",
+              "ver": "0.41.0",
+              "Node name for S&R": "KSampler",
+              "ue_properties": {
+                "widget_ue_connectable": {},
+                "version": "7.8",
+                "input_ue_unconnectable": {}
+              }
+            },
+            "widgets_values": [
+              65871820175365,
+              "randomize",
+              4,
+              1,
+              "euler",
+              "simple",
+              1
+            ],
+            "widgets_values_named": {
+              "seed": 65871820175365,
+              "control_after_generate": "randomize",
+              "steps": 4,
+              "cfg": 1,
+              "sampler_name": "euler",
+              "scheduler": "simple",
+              "denoise": 1
+            }
+          },
+          {
+            "id": 19,
+            "type": "VAEDecode",
+            "pos": [
+              1470,
+              640
+            ],
+            "size": [
+              210,
+              50
+            ],
+            "flags": {},
+            "order": 1,
+            "mode": 0,
+            "inputs": [
+              {
+                "localized_name": "samples",
+                "name": "samples",
+                "type": "LATENT",
+                "link": 24
+              },
+              {
+                "localized_name": "vae",
+                "name": "vae",
+                "type": "VAE",
+                "link": 45
+              }
+            ],
+            "outputs": [
+              {
+                "localized_name": "影像",
+                "name": "IMAGE",
+                "type": "IMAGE",
+                "slot_index": 0,
+                "links": [
+                  28
+                ]
+              }
+            ],
+            "properties": {
+              "cnr_id": "comfy-core",
+              "ver": "0.41.0",
+              "Node name for S&R": "VAEDecode",
+              "ue_properties": {
+                "widget_ue_connectable": {},
+                "version": "7.8",
+                "input_ue_unconnectable": {}
+              }
+            }
+          }
+        ],
+        "groups": [],
+        "links": [
+          {
+            "id": 24,
+            "origin_id": 17,
+            "origin_slot": 0,
+            "target_id": 19,
+            "target_slot": 0,
+            "type": "LATENT"
+          },
+          {
+            "id": 31,
+            "origin_id": -10,
+            "origin_slot": 0,
+            "target_id": 17,
+            "target_slot": 1,
+            "type": "CONDITIONING"
+          },
+          {
+            "id": 30,
+            "origin_id": -10,
+            "origin_slot": 1,
+            "target_id": 17,
+            "target_slot": 2,
+            "type": "CONDITIONING"
+          },
+          {
+            "id": 29,
+            "origin_id": -10,
+            "origin_slot": 2,
+            "target_id": 17,
+            "target_slot": 3,
+            "type": "LATENT"
+          },
+          {
+            "id": 44,
+            "origin_id": -10,
+            "origin_slot": 3,
+            "target_id": 17,
+            "target_slot": 4,
+            "type": "INT"
+          },
+          {
+            "id": 45,
+            "origin_id": -10,
+            "origin_slot": 4,
+            "target_id": 19,
+            "target_slot": 1,
+            "type": "VAE"
+          },
+          {
+            "id": 47,
+            "origin_id": -10,
+            "origin_slot": 5,
+            "target_id": 17,
+            "target_slot": 0,
+            "type": "MODEL"
+          },
+          {
+            "id": 28,
+            "origin_id": 19,
+            "origin_slot": 0,
+            "target_id": -20,
+            "target_slot": 0,
+            "type": "IMAGE"
+          }
+        ],
+        "extra": {
+          "ue_links": [],
+          "links_added_by_ue": [],
+          "pixaromaGroups": []
+        }
+      },
+      {
+        "id": "104e1728-2005-4240-9880-60a0349b2be2",
+        "version": 1,
+        "state": {
+          "lastGroupId": 3,
+          "lastNodeId": 286,
+          "lastLinkId": 564,
+          "lastRerouteId": 0
+        },
+        "revision": 0,
+        "config": {},
+        "name": "New Subgraph",
+        "inputNode": {
+          "id": -10,
+          "bounding": [
+            -271.8271661121037,
+            -180.57417666199854,
+            128,
+            88
+          ]
+        },
+        "outputNode": {
+          "id": -20,
+          "bounding": [
+            1463.6379779960444,
+            -328.14507699586153,
+            128,
+            68
+          ]
+        },
+        "inputs": [
+          {
+            "id": "87b5827a-fc8a-4f71-a6f8-8c101a983aa0",
+            "name": "positive",
+            "type": "STRING",
+            "linkIds": [
+              538,
+              540
+            ],
+            "pos": [
+              -167.82716611210373,
+              -156.57417666199854
+            ]
+          },
+          {
+            "id": "0a512c55-c630-4c51-9ed8-7c56e880ac51",
+            "name": "negative",
+            "type": "STRING",
+            "linkIds": [
+              539,
+              541
+            ],
+            "pos": [
+              -167.82716611210373,
+              -136.57417666199854
+            ]
+          }
+        ],
+        "outputs": [
+          {
+            "id": "13ebe7cf-af8d-452e-ac47-780e0cb43165",
+            "name": "decision",
+            "type": "S1_DECISION",
+            "linkIds": [
+              557
+            ],
+            "pos": [
+              1487.6379779960444,
+              -304.14507699586153
+            ]
+          }
+        ],
+        "widgets": [],
+        "nodes": [
+          {
+            "id": 274,
+            "type": "S1Settings",
+            "pos": [
+              -268.9131858519463,
+              -477.12605450119827
+            ],
+            "size": [
+              270,
+              178
+            ],
+            "flags": {
+              "collapsed": true
+            },
+            "order": 0,
+            "mode": 0,
+            "inputs": [],
+            "outputs": [
+              {
+                "localized_name": "settings",
+                "name": "settings",
+                "type": "S1_SETTINGS",
+                "links": [
+                  542,
+                  543
+                ]
+              }
+            ],
+            "properties": {
+              "aux_id": "ComfyUI-SystemOne-LoraRouter",
+              "ver": "648a1a20133b90855620ed69a39b99c3ebfb7338",
+              "Node name for S&R": "S1Settings"
+            },
+            "widgets_values": [
+              "123456789",
+              "systemone",
+              "https://systemone.example.com/v1/systemone",
+              0.5,
+              "passthrough",
+              0
+            ],
+            "widgets_values_named": {
+              "api_key": "123456789",
+              "api_model": "systemone",
+              "endpoint": "https://systemone.example.com/v1/systemone",
+              "noul_threshold": 0.5,
+              "on_error": "passthrough",
+              "min_confidence": 0
+            }
+          },
+          {
+            "id": 281,
+            "type": "S1ThemeRoot",
+            "pos": [
+              5.937642601322494,
+              -503.3256422698586
+            ],
+            "size": [
+              400,
+              728
+            ],
+            "flags": {},
+            "order": 1,
+            "mode": 0,
+            "inputs": [
+              {
+                "localized_name": "positive",
+                "name": "positive",
+                "type": "STRING",
+                "link": 538
+              },
+              {
+                "localized_name": "negative",
+                "name": "negative",
+                "shape": 7,
+                "type": "STRING",
+                "link": 539
+              },
+              {
+                "localized_name": "settings",
+                "name": "settings",
+                "type": "S1_SETTINGS",
+                "link": 542
+              }
+            ],
+            "outputs": [
+              {
+                "name": "Tween (option_1)",
+                "type": "S1_DECISION",
+                "links": [
+                  561
+                ],
+                "localized_name": "Tween",
+                "label": "Tween",
+                "s1OptionId": "option_1",
+                "s1PromptIndex": 0
+              },
+              {
+                "name": "Teenager (option_2)",
+                "type": "S1_DECISION",
+                "links": [
+                  562
+                ],
+                "localized_name": "Teenager",
+                "label": "Teenager",
+                "s1OptionId": "option_2",
+                "s1PromptIndex": 1
+              },
+              {
+                "name": "Adult (option_3)",
+                "type": "S1_DECISION",
+                "links": [
+                  563
+                ],
+                "localized_name": "Adult",
+                "label": "Adult",
+                "s1OptionId": "option_3",
+                "s1PromptIndex": 2
+              },
+              {
+                "name": "None (option_4)",
+                "type": "S1_DECISION",
+                "links": [
+                  551,
+                  564
+                ],
+                "localized_name": "None",
+                "label": "None",
+                "s1OptionId": "option_4",
+                "s1PromptIndex": 3
+              },
+              {
+                "name": "·",
+                "type": "S1_DECISION",
+                "links": null,
+                "s1OptionId": "",
+                "s1PromptIndex": 4
+              },
+              {
+                "name": "·",
+                "type": "S1_DECISION",
+                "links": null,
+                "s1OptionId": "",
+                "s1PromptIndex": 5
+              },
+              {
+                "name": "·",
+                "type": "S1_DECISION",
+                "links": null,
+                "s1OptionId": "",
+                "s1PromptIndex": 6
+              },
+              {
+                "name": "·",
+                "type": "S1_DECISION",
+                "links": null,
+                "s1OptionId": "",
+                "s1PromptIndex": 7
+              },
+              {
+                "name": "·",
+                "type": "S1_DECISION",
+                "links": null,
+                "s1OptionId": "",
+                "s1PromptIndex": 8
+              },
+              {
+                "name": "·",
+                "type": "S1_DECISION",
+                "links": null,
+                "s1OptionId": "",
+                "s1PromptIndex": 9
+              },
+              {
+                "name": "·",
+                "type": "S1_DECISION",
+                "links": null,
+                "s1OptionId": "",
+                "s1PromptIndex": 10
+              },
+              {
+                "name": "·",
+                "type": "S1_DECISION",
+                "links": null,
+                "s1OptionId": "",
+                "s1PromptIndex": 11
+              },
+              {
+                "name": "·",
+                "type": "S1_DECISION",
+                "links": null,
+                "s1OptionId": "",
+                "s1PromptIndex": 12
+              },
+              {
+                "name": "·",
+                "type": "S1_DECISION",
+                "links": null,
+                "s1OptionId": "",
+                "s1PromptIndex": 13
+              },
+              {
+                "name": "·",
+                "type": "S1_DECISION",
+                "links": null,
+                "s1OptionId": "",
+                "s1PromptIndex": 14
+              },
+              {
+                "name": "·",
+                "type": "S1_DECISION",
+                "links": null,
+                "s1OptionId": "",
+                "s1PromptIndex": 15
+              },
+              {
+                "name": "·",
+                "type": "S1_DECISION",
+                "links": null,
+                "s1OptionId": "",
+                "s1PromptIndex": 16
+              },
+              {
+                "name": "·",
+                "type": "S1_DECISION",
+                "links": null,
+                "s1OptionId": "",
+                "s1PromptIndex": 17
+              },
+              {
+                "name": "·",
+                "type": "S1_DECISION",
+                "links": null,
+                "s1OptionId": "",
+                "s1PromptIndex": 18
+              },
+              {
+                "name": "·",
+                "type": "S1_DECISION",
+                "links": null,
+                "s1OptionId": "",
+                "s1PromptIndex": 19
+              },
+              {
+                "name": "·",
+                "type": "S1_DECISION",
+                "links": null,
+                "s1OptionId": "",
+                "s1PromptIndex": 20
+              },
+              {
+                "name": "·",
+                "type": "S1_DECISION",
+                "links": null,
+                "s1OptionId": "",
+                "s1PromptIndex": 21
+              },
+              {
+                "name": "·",
+                "type": "S1_DECISION",
+                "links": null,
+                "s1OptionId": "",
+                "s1PromptIndex": 22
+              },
+              {
+                "name": "·",
+                "type": "S1_DECISION",
+                "links": null,
+                "s1OptionId": "",
+                "s1PromptIndex": 23
+              },
+              {
+                "name": "·",
+                "type": "S1_DECISION",
+                "links": null,
+                "s1OptionId": "",
+                "s1PromptIndex": 24
+              },
+              {
+                "name": "·",
+                "type": "S1_DECISION",
+                "links": null,
+                "s1OptionId": "",
+                "s1PromptIndex": 25
+              },
+              {
+                "name": "·",
+                "type": "S1_DECISION",
+                "links": null,
+                "s1OptionId": "",
+                "s1PromptIndex": 26
+              },
+              {
+                "name": "·",
+                "type": "S1_DECISION",
+                "links": null,
+                "s1OptionId": "",
+                "s1PromptIndex": 27
+              },
+              {
+                "name": "·",
+                "type": "S1_DECISION",
+                "links": null,
+                "s1OptionId": "",
+                "s1PromptIndex": 28
+              },
+              {
+                "name": "·",
+                "type": "S1_DECISION",
+                "links": null,
+                "s1OptionId": "",
+                "s1PromptIndex": 29
+              },
+              {
+                "name": "·",
+                "type": "S1_DECISION",
+                "links": null,
+                "s1OptionId": "",
+                "s1PromptIndex": 30
+              },
+              {
+                "name": "·",
+                "type": "S1_DECISION",
+                "links": null,
+                "s1OptionId": "",
+                "s1PromptIndex": 31
+              },
+              {
+                "name": "report_json",
+                "type": "STRING",
+                "links": null,
+                "localized_name": "report_json",
+                "s1PromptIndex": 32
+              }
+            ],
+            "properties": {
+              "aux_id": "ComfyUI-SystemOne-LoraRouter",
+              "ver": "98ab02d5f74d602cd671b1b9b4cf5057e1039022",
+              "Node name for S&R": "S1ThemeRoot"
+            },
+            "widgets_values": [
+              "{\n  \"version\": 1,\n  \"theme_id\": \"theme_1\",\n  \"title\": \"Theme\",\n  \"instructions\": \"Choose the options that fit the character's age.\",\n  \"select_mode\": \"single\",\n  \"options\": [\n    {\n      \"option_id\": \"option_1\",\n      \"label\": \"Tween\",\n      \"description\": \"Tween\",\n      \"tags\": [\n        \"age:-1.5\"\n      ]\n    },\n    {\n      \"option_id\": \"option_2\",\n      \"label\": \"Teenager\",\n      \"description\": \"Teenager\",\n      \"tags\": [\n        \"age:-1\"\n      ]\n    },\n    {\n      \"option_id\": \"option_3\",\n      \"label\": \"Adult\",\n      \"description\": \"Adult\",\n      \"tags\": [\n        \"age:1\"\n      ]\n    },\n    {\n      \"option_id\": \"option_4\",\n      \"label\": \"None\",\n      \"description\": \"None\"\n    }\n  ],\n  \"none_option_id\": \"option_4\"\n}"
+            ],
+            "widgets_values_named": {
+              "theme_json": "{\n  \"version\": 1,\n  \"theme_id\": \"theme_1\",\n  \"title\": \"Theme\",\n  \"instructions\": \"Choose the options that fit the character's age.\",\n  \"select_mode\": \"single\",\n  \"options\": [\n    {\n      \"option_id\": \"option_1\",\n      \"label\": \"Tween\",\n      \"description\": \"Tween\",\n      \"tags\": [\n        \"age:-1.5\"\n      ]\n    },\n    {\n      \"option_id\": \"option_2\",\n      \"label\": \"Teenager\",\n      \"description\": \"Teenager\",\n      \"tags\": [\n        \"age:-1\"\n      ]\n    },\n    {\n      \"option_id\": \"option_3\",\n      \"label\": \"Adult\",\n      \"description\": \"Adult\",\n      \"tags\": [\n        \"age:1\"\n      ]\n    },\n    {\n      \"option_id\": \"option_4\",\n      \"label\": \"None\",\n      \"description\": \"None\"\n    }\n  ],\n  \"none_option_id\": \"option_4\"\n}"
+            }
+          },
+          {
+            "id": 282,
+            "type": "S1Theme",
+            "pos": [
+              672.9136823714298,
+              -497.18849823956424
+            ],
+            "size": [
+              400,
+              728
+            ],
+            "flags": {},
+            "order": 2,
+            "mode": 0,
+            "inputs": [
+              {
+                "localized_name": "positive",
+                "name": "positive",
+                "type": "STRING",
+                "link": 540
+              },
+              {
+                "localized_name": "negative",
+                "name": "negative",
+                "shape": 7,
+                "type": "STRING",
+                "link": 541
+              },
+              {
+                "localized_name": "settings",
+                "name": "settings",
+                "type": "S1_SETTINGS",
+                "link": 543
+              },
+              {
+                "localized_name": "upstream",
+                "name": "upstream",
+                "type": "S1_DECISION",
+                "link": 544
+              }
+            ],
+            "outputs": [
+              {
+                "name": "flat (option_1)",
+                "type": "S1_DECISION",
+                "links": [
+                  552
+                ],
+                "localized_name": "flat",
+                "label": "flat",
+                "s1OptionId": "option_1",
+                "s1PromptIndex": 0
+              },
+              {
+                "name": "B to C Cup (option_2)",
+                "type": "S1_DECISION",
+                "links": [
+                  553
+                ],
+                "localized_name": "B to C Cup",
+                "label": "B to C Cup",
+                "s1OptionId": "option_2",
+                "s1PromptIndex": 1
+              },
+              {
+                "name": "D to E Cup (option_3)",
+                "type": "S1_DECISION",
+                "links": [
+                  554
+                ],
+                "localized_name": "D to E Cup",
+                "label": "D to E Cup",
+                "s1OptionId": "option_3",
+                "s1PromptIndex": 2
+              },
+              {
+                "name": "Above F Cup (option_4)",
+                "type": "S1_DECISION",
+                "links": [
+                  555
+                ],
+                "localized_name": "Above F Cup",
+                "label": "Above F Cup",
+                "s1OptionId": "option_4",
+                "s1PromptIndex": 3
+              },
+              {
+                "name": "None (option_5)",
+                "type": "S1_DECISION",
+                "links": [
+                  556
+                ],
+                "localized_name": "None",
+                "label": "None",
+                "s1OptionId": "option_5",
+                "s1PromptIndex": 4
+              },
+              {
+                "name": "·",
+                "type": "S1_DECISION",
+                "links": null,
+                "s1OptionId": "",
+                "s1PromptIndex": 5
+              },
+              {
+                "name": "·",
+                "type": "S1_DECISION",
+                "links": null,
+                "s1OptionId": "",
+                "s1PromptIndex": 6
+              },
+              {
+                "name": "·",
+                "type": "S1_DECISION",
+                "links": null,
+                "s1OptionId": "",
+                "s1PromptIndex": 7
+              },
+              {
+                "name": "·",
+                "type": "S1_DECISION",
+                "links": null,
+                "s1OptionId": "",
+                "s1PromptIndex": 8
+              },
+              {
+                "name": "·",
+                "type": "S1_DECISION",
+                "links": null,
+                "s1OptionId": "",
+                "s1PromptIndex": 9
+              },
+              {
+                "name": "·",
+                "type": "S1_DECISION",
+                "links": null,
+                "s1OptionId": "",
+                "s1PromptIndex": 10
+              },
+              {
+                "name": "·",
+                "type": "S1_DECISION",
+                "links": null,
+                "s1OptionId": "",
+                "s1PromptIndex": 11
+              },
+              {
+                "name": "·",
+                "type": "S1_DECISION",
+                "links": null,
+                "s1OptionId": "",
+                "s1PromptIndex": 12
+              },
+              {
+                "name": "·",
+                "type": "S1_DECISION",
+                "links": null,
+                "s1OptionId": "",
+                "s1PromptIndex": 13
+              },
+              {
+                "name": "·",
+                "type": "S1_DECISION",
+                "links": null,
+                "s1OptionId": "",
+                "s1PromptIndex": 14
+              },
+              {
+                "name": "·",
+                "type": "S1_DECISION",
+                "links": null,
+                "s1OptionId": "",
+                "s1PromptIndex": 15
+              },
+              {
+                "name": "·",
+                "type": "S1_DECISION",
+                "links": null,
+                "s1OptionId": "",
+                "s1PromptIndex": 16
+              },
+              {
+                "name": "·",
+                "type": "S1_DECISION",
+                "links": null,
+                "s1OptionId": "",
+                "s1PromptIndex": 17
+              },
+              {
+                "name": "·",
+                "type": "S1_DECISION",
+                "links": null,
+                "s1OptionId": "",
+                "s1PromptIndex": 18
+              },
+              {
+                "name": "·",
+                "type": "S1_DECISION",
+                "links": null,
+                "s1OptionId": "",
+                "s1PromptIndex": 19
+              },
+              {
+                "name": "·",
+                "type": "S1_DECISION",
+                "links": null,
+                "s1OptionId": "",
+                "s1PromptIndex": 20
+              },
+              {
+                "name": "·",
+                "type": "S1_DECISION",
+                "links": null,
+                "s1OptionId": "",
+                "s1PromptIndex": 21
+              },
+              {
+                "name": "·",
+                "type": "S1_DECISION",
+                "links": null,
+                "s1OptionId": "",
+                "s1PromptIndex": 22
+              },
+              {
+                "name": "·",
+                "type": "S1_DECISION",
+                "links": null,
+                "s1OptionId": "",
+                "s1PromptIndex": 23
+              },
+              {
+                "name": "·",
+                "type": "S1_DECISION",
+                "links": null,
+                "s1OptionId": "",
+                "s1PromptIndex": 24
+              },
+              {
+                "name": "·",
+                "type": "S1_DECISION",
+                "links": null,
+                "s1OptionId": "",
+                "s1PromptIndex": 25
+              },
+              {
+                "name": "·",
+                "type": "S1_DECISION",
+                "links": null,
+                "s1OptionId": "",
+                "s1PromptIndex": 26
+              },
+              {
+                "name": "·",
+                "type": "S1_DECISION",
+                "links": null,
+                "s1OptionId": "",
+                "s1PromptIndex": 27
+              },
+              {
+                "name": "·",
+                "type": "S1_DECISION",
+                "links": null,
+                "s1OptionId": "",
+                "s1PromptIndex": 28
+              },
+              {
+                "name": "·",
+                "type": "S1_DECISION",
+                "links": null,
+                "s1OptionId": "",
+                "s1PromptIndex": 29
+              },
+              {
+                "name": "·",
+                "type": "S1_DECISION",
+                "links": null,
+                "s1OptionId": "",
+                "s1PromptIndex": 30
+              },
+              {
+                "name": "·",
+                "type": "S1_DECISION",
+                "links": null,
+                "s1OptionId": "",
+                "s1PromptIndex": 31
+              },
+              {
+                "name": "report_json",
+                "type": "STRING",
+                "links": null,
+                "localized_name": "report_json",
+                "s1PromptIndex": 32
+              }
+            ],
+            "properties": {
+              "aux_id": "ComfyUI-SystemOne-LoraRouter",
+              "ver": "98ab02d5f74d602cd671b1b9b4cf5057e1039022",
+              "Node name for S&R": "S1Theme"
+            },
+            "widgets_values": [
+              "{\n  \"version\": 1,\n  \"theme_id\": \"theme_2\",\n  \"title\": \"Theme\",\n  \"instructions\": \"Choose the options that fit the character's breasts size.\",\n  \"select_mode\": \"single\",\n  \"options\": [\n    {\n      \"option_id\": \"option_1\",\n      \"label\": \"flat\",\n      \"description\": \"flat\",\n      \"tags\": [\n        \"boobs:-0.5\"\n      ]\n    },\n    {\n      \"option_id\": \"option_2\",\n      \"label\": \"B to C Cup\",\n      \"description\": \"B to C Cup\",\n      \"tags\": [\n        \"boobs:0.5\"\n      ]\n    },\n    {\n      \"option_id\": \"option_3\",\n      \"label\": \"D to E Cup\",\n      \"description\": \"D to E Cup\",\n      \"tags\": [\n        \"boobs:1\"\n      ]\n    },\n    {\n      \"option_id\": \"option_4\",\n      \"label\": \"Above F Cup\",\n      \"description\": \"Above F Cup\",\n      \"tags\": [\n        \"boobs:2\"\n      ]\n    },\n    {\n      \"option_id\": \"option_5\",\n      \"label\": \"None\",\n      \"description\": \"None\"\n    }\n  ],\n  \"none_option_id\": \"option_5\"\n}"
+            ],
+            "widgets_values_named": {
+              "theme_json": "{\n  \"version\": 1,\n  \"theme_id\": \"theme_2\",\n  \"title\": \"Theme\",\n  \"instructions\": \"Choose the options that fit the character's breasts size.\",\n  \"select_mode\": \"single\",\n  \"options\": [\n    {\n      \"option_id\": \"option_1\",\n      \"label\": \"flat\",\n      \"description\": \"flat\",\n      \"tags\": [\n        \"boobs:-0.5\"\n      ]\n    },\n    {\n      \"option_id\": \"option_2\",\n      \"label\": \"B to C Cup\",\n      \"description\": \"B to C Cup\",\n      \"tags\": [\n        \"boobs:0.5\"\n      ]\n    },\n    {\n      \"option_id\": \"option_3\",\n      \"label\": \"D to E Cup\",\n      \"description\": \"D to E Cup\",\n      \"tags\": [\n        \"boobs:1\"\n      ]\n    },\n    {\n      \"option_id\": \"option_4\",\n      \"label\": \"Above F Cup\",\n      \"description\": \"Above F Cup\",\n      \"tags\": [\n        \"boobs:2\"\n      ]\n    },\n    {\n      \"option_id\": \"option_5\",\n      \"label\": \"None\",\n      \"description\": \"None\"\n    }\n  ],\n  \"none_option_id\": \"option_5\"\n}"
+            }
+          },
+          {
+            "id": 283,
+            "type": "S1ThemeCollect",
+            "pos": [
+              429.34627286030025,
+              -503.4251702522799
+            ],
+            "size": [
+              140,
+              326
+            ],
+            "flags": {},
+            "order": 3,
+            "mode": 0,
+            "inputs": [
+              {
+                "localized_name": "a",
+                "name": "a",
+                "shape": 7,
+                "type": "S1_DECISION",
+                "link": 561
+              },
+              {
+                "name": "b",
+                "type": "S1_DECISION",
+                "link": 562
+              },
+              {
+                "name": "c",
+                "type": "S1_DECISION",
+                "link": 563
+              },
+              {
+                "name": "d",
+                "type": "S1_DECISION",
+                "link": 564
+              },
+              {
+                "name": "g",
+                "type": "S1_DECISION",
+                "link": null
+              },
+              {
+                "name": "h",
+                "type": "S1_DECISION",
+                "link": null
+              }
+            ],
+            "outputs": [
+              {
+                "localized_name": "decision",
+                "name": "decision",
+                "type": "S1_DECISION",
+                "links": [
+                  544
+                ]
+              }
+            ],
+            "properties": {
+              "aux_id": "ComfyUI-SystemOne-LoraRouter",
+              "ver": "98ab02d5f74d602cd671b1b9b4cf5057e1039022",
+              "Node name for S&R": "S1ThemeCollect"
+            }
+          },
+          {
+            "id": 285,
+            "type": "S1ThemeCollect",
+            "pos": [
+              1111.7046413402795,
+              -496.8304455623277
+            ],
+            "size": [
+              140,
+              326
+            ],
+            "flags": {},
+            "order": 4,
+            "mode": 0,
+            "inputs": [
+              {
+                "localized_name": "a",
+                "name": "a",
+                "shape": 7,
+                "type": "S1_DECISION",
+                "link": 552
+              },
+              {
+                "name": "b",
+                "type": "S1_DECISION",
+                "link": 553
+              },
+              {
+                "name": "c",
+                "type": "S1_DECISION",
+                "link": 554
+              },
+              {
+                "name": "d",
+                "type": "S1_DECISION",
+                "link": 555
+              },
+              {
+                "name": "e",
+                "type": "S1_DECISION",
+                "link": 556
+              },
+              {
+                "name": "f",
+                "type": "S1_DECISION",
+                "link": null
+              }
+            ],
+            "outputs": [
+              {
+                "localized_name": "decision",
+                "name": "decision",
+                "type": "S1_DECISION",
+                "links": [
+                  557
+                ]
+              }
+            ],
+            "properties": {
+              "aux_id": "ComfyUI-SystemOne-LoraRouter",
+              "ver": "98ab02d5f74d602cd671b1b9b4cf5057e1039022",
+              "Node name for S&R": "S1ThemeCollect"
+            }
+          }
+        ],
+        "groups": [],
+        "links": [
+          {
+            "id": 538,
+            "origin_id": -10,
+            "origin_slot": 0,
+            "target_id": 281,
+            "target_slot": 0,
+            "type": "STRING"
+          },
+          {
+            "id": 539,
+            "origin_id": -10,
+            "origin_slot": 1,
+            "target_id": 281,
+            "target_slot": 1,
+            "type": "STRING"
+          },
+          {
+            "id": 540,
+            "origin_id": -10,
+            "origin_slot": 0,
+            "target_id": 282,
+            "target_slot": 0,
+            "type": "STRING"
+          },
+          {
+            "id": 541,
+            "origin_id": -10,
+            "origin_slot": 1,
+            "target_id": 282,
+            "target_slot": 1,
+            "type": "STRING"
+          },
+          {
+            "id": 542,
+            "origin_id": 274,
+            "origin_slot": 0,
+            "target_id": 281,
+            "target_slot": 2,
+            "type": "S1_SETTINGS"
+          },
+          {
+            "id": 543,
+            "origin_id": 274,
+            "origin_slot": 0,
+            "target_id": 282,
+            "target_slot": 2,
+            "type": "S1_SETTINGS"
+          },
+          {
+            "id": 544,
+            "origin_id": 283,
+            "origin_slot": 0,
+            "target_id": 282,
+            "target_slot": 3,
+            "type": "S1_DECISION"
+          },
+          {
+            "id": 557,
+            "origin_id": 285,
+            "origin_slot": 0,
+            "target_id": -20,
+            "target_slot": 0,
+            "type": "S1_DECISION"
+          },
+          {
+            "id": 552,
+            "origin_id": 282,
+            "origin_slot": 0,
+            "target_id": 285,
+            "target_slot": 0,
+            "type": "S1_DECISION"
+          },
+          {
+            "id": 553,
+            "origin_id": 282,
+            "origin_slot": 1,
+            "target_id": 285,
+            "target_slot": 1,
+            "type": "S1_DECISION"
+          },
+          {
+            "id": 554,
+            "origin_id": 282,
+            "origin_slot": 2,
+            "target_id": 285,
+            "target_slot": 2,
+            "type": "S1_DECISION"
+          },
+          {
+            "id": 555,
+            "origin_id": 282,
+            "origin_slot": 3,
+            "target_id": 285,
+            "target_slot": 3,
+            "type": "S1_DECISION"
+          },
+          {
+            "id": 556,
+            "origin_id": 282,
+            "origin_slot": 4,
+            "target_id": 285,
+            "target_slot": 4,
+            "type": "S1_DECISION"
+          },
+          {
+            "id": 551,
+            "origin_id": 281,
+            "origin_slot": 3,
+            "target_id": 283,
+            "target_slot": 6,
+            "type": "S1_DECISION"
+          },
+          {
+            "id": 561,
+            "origin_id": 281,
+            "origin_slot": 0,
+            "target_id": 283,
+            "target_slot": 0,
+            "type": "S1_DECISION"
+          },
+          {
+            "id": 562,
+            "origin_id": 281,
+            "origin_slot": 1,
+            "target_id": 283,
+            "target_slot": 1,
+            "type": "S1_DECISION"
+          },
+          {
+            "id": 563,
+            "origin_id": 281,
+            "origin_slot": 2,
+            "target_id": 283,
+            "target_slot": 2,
+            "type": "S1_DECISION"
+          },
+          {
+            "id": 564,
+            "origin_id": 281,
+            "origin_slot": 3,
+            "target_id": 283,
+            "target_slot": 3,
+            "type": "S1_DECISION"
+          }
+        ],
+        "extra": {}
+      }
+    ]
+  },
+  "config": {},
+  "extra": {
+    "VHS_latentpreview": false,
+    "VHS_latentpreviewrate": 0,
+    "VHS_MetadataImage": true,
+    "VHS_KeepIntermediate": true,
+    "frontendVersion": "1.57.6",
+    "ue_links": [],
+    "links_added_by_ue": [],
+    "ds": {
+      "scale": 1.0277516448262016,
+      "offset": [
+        173.84956378056046,
+        673.7781175819858
+      ]
+    }
+  },
+  "extensions": {
+    "seed_widgets": {
+      "22": 0
+    }
+  },
+  "version": 0.4,
+  "seed_widgets": {
+    "22": 0
+  }
+}
