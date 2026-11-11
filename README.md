@@ -129,3 +129,7 @@ python3 -m unittest
 ```
 
 Tests do not call SystemOne and do not need an API key. JS model tests run when `node` is installed. There is no browser click-through in this suite.
+
+## AI-assisted development
+
+This project is developed in collaboration with Grok Bot, an AI assistant. The maintainer leads the requirements, design, and testing, while most of the code and documentation is written by Grok Bot. Every change is reviewed by the maintainer and tested in ComfyUI before it is merged.
