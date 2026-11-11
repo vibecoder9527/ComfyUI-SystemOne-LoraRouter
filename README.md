@@ -8,6 +8,9 @@ Positive is the input above negative on every Theme node. Positive is required. 
 
 The full contract is [SPEC.md](SPEC.md). Upgrading an older workflow (`enable_json`, `theme_result`, theme libraries, sequences) is covered in [MIGRATION.md](MIGRATION.md).
 
+<img width="1420" height="717" alt="image" src="https://github.com/user-attachments/assets/da821ec8-0d73-497c-a8ec-5b7992bce843" />
+
+
 ## Install
 
 The folder inside `custom_nodes` must be named `ComfyUI-SystemOne-LoraRouter`.
